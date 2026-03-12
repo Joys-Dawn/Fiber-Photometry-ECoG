@@ -1,0 +1,24 @@
+# Hidden/tool directories
+.claude/
+.pytest_cache/
+.ruff_cache/
+
+# Test data (large binary files)
+test_data/
+Chandni_data/
+
+# Reference code (not part of this project)
+reference_code/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/

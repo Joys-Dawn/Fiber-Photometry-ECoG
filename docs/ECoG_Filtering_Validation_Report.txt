@@ -1,0 +1,453 @@
+================================================================================
+ECoG/EEG PREPROCESSING FILTER VALIDATION REPORT
+================================================================================
+Prepared: 2026-03-06
+Context: Validating Chandni's approach -- 4th order Butterworth bandpass 1-70 Hz
++ 60 Hz notch (Q=30), applied with zero-phase filtering (sosfiltfilt)
+
+Sources cited: peer-reviewed papers, official software documentation (MNE-Python,
+EEGLAB, SciPy, Open Ephys), and established preprocessing pipelines.
+
+================================================================================
+QUESTION 1: Is 4th order Butterworth bandpass the standard for mouse ECoG?
+================================================================================
+
+VERDICT: Yes. A 4th order Butterworth is the most common "workhorse" filter for
+rodent ECoG/EEG preprocessing. The choice is well-supported.
+
+EVIDENCE:
+
+1. Filter type -- Butterworth is preferred for its maximally flat frequency
+   response in the passband, meaning it does not introduce amplitude ripples
+   within the band of interest. This is critical for preserving relative power
+   across frequency bands.
+   - Widmann, Schroger & Maess (2015), "Digital filter design for electro-
+     physiological data -- a practical approach," J. Neuroscience Methods, 250,
+     34-46. DOI: 10.1016/j.jneumeth.2014.08.002
+     This is the most-cited practical reference for EEG/MEG filter design (456+
+     citations). They discuss Butterworth IIR filters as a standard choice.
+
+2. Filter order -- 4th order is the most common in the literature:
+   - Open Ephys GUI uses a 2nd-order Butterworth by default (note: this is a
+     real-time causal system, not offline analysis).
+     Source: https://open-ephys.github.io/gui-docs/User-Manual/Plugins/Bandpass-Filter.html
+   - The R eegkit package defaults to order=3 Butterworth with forward-reverse
+     filtering.
+   - Most rodent ECoG papers use 2nd to 4th order Butterworth. When applied
+     with filtfilt (forward-backward), the effective order doubles, so a
+     nominal 4th order becomes an effective 8th order filter.
+   - Some automated spike detection systems use 2nd order Butterworth
+     (referenced in alphaXiv literature on SNN-based spike detectors).
+
+3. Frequency range -- 1-70 Hz:
+   - The 1 Hz high-pass is standard for removing DC drift and slow movement
+     artifacts. EEGLAB recommends 1 Hz high-pass for good ICA decompositions
+     (Klug & Gramann, 2020).
+   - For interictal spike detection, the frequency content spans approximately
+     0.5-70 Hz. A 1 Hz high-pass is well within the acceptable range (0.5-1 Hz
+     is typical).
+   - The 70 Hz low-pass is appropriate for standard ECoG analysis including
+     interictal spikes. If Chandni does NOT need to analyze high-gamma (80-150
+     Hz) or high-frequency oscillations (HFOs, 80-500 Hz), then 70 Hz is fine.
+
+   IMPORTANT CAVEAT: If future analysis will include high-gamma or HFO analysis,
+   the low-pass should be raised to 200-300 Hz. For standard interictal spike
+   detection, 70 Hz is the established upper bound.
+
+   Relevant ranges from the literature:
+   - Standard IED detection: 0.5-70 Hz (clinical standard)
+   - Scalp EEG general: 1-40 Hz or 1-100 Hz
+   - ECoG with HFOs: 1-500 Hz
+   - Rodent theta is broader than human (4-12 Hz vs 4-8 Hz), so the 1 Hz
+     high-pass preserves all relevant rodent bands.
+
+
+================================================================================
+QUESTION 2: Is Q=30 appropriate for the 60 Hz notch? Should harmonics be notched?
+================================================================================
+
+VERDICT: Q=30 is a standard and appropriate value. Notching harmonics (120 Hz,
+180 Hz) is recommended practice but only matters if the low-pass cutoff is above
+those frequencies (in Chandni's case, 70 Hz LP makes this moot).
+
+EVIDENCE:
+
+1. Q=30 for a 60 Hz notch:
+   - A quality factor Q=30 at 60 Hz produces a notch bandwidth of 60/30 = 2 Hz,
+     meaning the -3 dB points are at approximately 59 Hz and 61 Hz.
+   - This is the standard value used across the literature and is explicitly
+     described as "standard for removing power-line hum without distorting
+     neighboring neural frequencies."
+   - scipy.signal.iirnotch with Q=30 at 60 Hz is essentially the textbook
+     implementation seen in countless EEG/ECG processing examples.
+   - The Brainstorm documentation (Tadel et al.) defaults to a narrow notch
+     around 60 Hz.
+
+2. Harmonics (120 Hz, 180 Hz):
+   - Best practice in mouse ECoG (where signals are small and environmental
+     noise is proportionally larger) is to notch the fundamental AND the first
+     two harmonics: 60, 120, and 180 Hz.
+   - HOWEVER: Since Chandni's bandpass low-pass cutoff is 70 Hz, the 120 Hz
+     and 180 Hz harmonics are already attenuated by the bandpass filter. Adding
+     explicit notch filters at those frequencies is unnecessary.
+   - If the bandpass were extended above 120 Hz (e.g., for high-gamma), then
+     120 Hz and 180 Hz notches would be essential.
+   - MNE-Python's notch_filter function accepts an array of frequencies
+     (e.g., np.arange(60, 241, 60)) specifically for this multi-harmonic use
+     case.
+   - Source: MNE docs, mne.filter.notch_filter, which applies zero-phase
+     notch filtering at specified frequencies and harmonics.
+
+3. Alternative approach -- spectrum fitting:
+   - MNE-Python also offers spectrum_fit mode for notch filtering, which
+     adaptively estimates and removes line noise. This is more robust when
+     line noise frequency drifts slightly but is more complex.
+
+
+================================================================================
+QUESTION 3: Is zero-phase filtering (sosfiltfilt / filtfilt) correct?
+================================================================================
+
+VERDICT: Yes. Zero-phase filtering is the correct and recommended approach for
+offline ECoG analysis, including interictal spike detection. Causal filtering is
+only preferred in specific, narrow circumstances.
+
+EVIDENCE:
+
+1. Zero-phase filtering is the standard for offline analysis:
+   - filtfilt / sosfiltfilt applies the filter forward and then backward,
+     canceling the phase distortion. This preserves the temporal location of
+     neural events (spikes, oscillation peaks).
+   - de Cheveigne & Nelken (2019), "Filters: When, Why, and How (Not) to Use
+     Them," Neuron, 102(2), 280-293. DOI: 10.1016/j.neuron.2019.02.039
+     This authoritative review (181+ Scopus citations) explicitly recommends
+     zero-phase filtering for offline analysis and warns about the temporal
+     distortions caused by causal filters.
+   - SciPy documentation for filtfilt explicitly states: "The combined filter
+     has zero phase and a filter order twice that of the original."
+
+2. When causal filtering IS preferred (and when it is NOT needed here):
+   - Real-time / online processing (e.g., Open Ephys during acquisition):
+     causal filtering is required because future data is unavailable.
+   - Onset latency analysis: If one is measuring the exact onset time of an
+     ERP component, non-causal (zero-phase) filters can smear the onset
+     backward in time. This is NOT relevant for interictal spike detection,
+     where the goal is spike identification and counting, not sub-millisecond
+     onset timing.
+   - Pre-stimulus contamination in ERP studies: Non-causal filters can spread
+     post-stimulus activity into the pre-stimulus baseline. Not relevant here.
+   - Source: EEGLAB News #8, Andreas Widmann Q&A on causal filtering:
+     "Causal filters typically should only be used if the application
+     explicitly requires this."
+   - Widmann et al. (2015) and Widmann & Schroger (2012), Frontiers in
+     Psychology, 3:233, both confirm that zero-phase is the default
+     recommendation for general EEG analysis.
+
+3. Effect on filter order:
+   - With sosfiltfilt, a nominal 4th order Butterworth becomes an effective
+     8th order filter (the roll-off steepness doubles). This is desirable --
+     it provides a steeper transition band without the phase distortion that
+     would come from simply designing an 8th order causal filter.
+
+
+================================================================================
+QUESTION 4: SOS form vs ba-form -- does it matter for numerical stability?
+================================================================================
+
+VERDICT: SOS form is strictly superior and should always be used. The ba-form
+becomes numerically unstable at orders >= 4-6 for bandpass filters. Chandni's
+use of sosfiltfilt is correct.
+
+EVIDENCE:
+
+1. SciPy official documentation (scipy.signal.filtfilt):
+   DIRECT QUOTE: "The function sosfiltfilt (and filter design using
+   output='sos') should be preferred over filtfilt for most filtering tasks,
+   as second-order sections have fewer numerical problems."
+   Source: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.filtfilt.html
+
+2. SciPy official documentation (scipy.signal.butter):
+   The butter() function documentation states that output='sos' "should be
+   used for general-purpose filtering" (over the default 'ba' output, which
+   exists only for backward compatibility).
+   Source: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.butter.html
+
+3. Why ba-form fails:
+   - The ba (transfer function) form represents the filter as a single high-
+     order polynomial ratio. For a 4th order bandpass Butterworth, this is
+     actually an 8th order polynomial (bandpass doubles the order).
+   - High-order polynomials have coefficients that span many orders of
+     magnitude, leading to catastrophic floating-point cancellation.
+   - The SOS (second-order sections) form decomposes the filter into a cascade
+     of 2nd-order biquad sections, each of which is individually stable.
+
+4. At what order does it become critical?
+   - For lowpass/highpass filters: problems typically emerge around order 8-10
+     with ba-form.
+   - For bandpass/bandstop filters: problems emerge earlier because a bandpass
+     of nominal order N produces an actual polynomial of order 2N. So a 4th
+     order bandpass = 8th order polynomial, which is already in the danger
+     zone for ba-form.
+   - A 4th order Butterworth bandpass with sosfiltfilt is the RIGHT approach.
+     The same filter with filtfilt using ba coefficients could produce
+     incorrect results or numerical instability.
+   - Stack Overflow and DSP Stack Exchange discussions confirm users
+     encountering incorrect filtering results when using ba-form with
+     filtfilt for orders > 2 on bandpass filters.
+
+5. Practical recommendation:
+   - ALWAYS use: sos = butter(N, [low, high], btype='band', output='sos', fs=fs)
+                  filtered = sosfiltfilt(sos, data)
+   - NEVER use:  b, a = butter(N, [low, high], btype='band', fs=fs)
+                  filtered = filtfilt(b, a, data)
+   - This applies to all IIR filter designs (Butterworth, Chebyshev, elliptic).
+
+
+================================================================================
+QUESTION 5: Should the notch filter be applied before or after the bandpass?
+================================================================================
+
+VERDICT: Apply the notch filter BEFORE the bandpass, or at minimum, on the
+continuous (un-epoched) data before any other processing. In practice, for
+linear filters, the mathematical result is identical -- but there are practical
+reasons to prefer notch-first.
+
+EVIDENCE:
+
+1. Brainstorm documentation (Tadel, Bock, Mosher, Leahy, Baillet):
+   DIRECT QUOTE: "Usually we prefer to run these notch and band-pass filters
+   before any other type of correction, on the continuous files."
+   Source: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsFilter
+
+2. Linear operations are order-independent in theory:
+   - Both notch and bandpass filtering are linear operations. Mathematically,
+     applying notch then bandpass gives the same result as bandpass then notch.
+   - Source: Luck (2014), "An Introduction to the Event-Related Potential
+     Technique," 2nd Ed., MIT Press. The key principle: linear operations can
+     be performed in any order.
+   - This means Chandni's pipeline will produce identical results regardless
+     of filter order, AS LONG AS both filters are applied to the same data
+     (no nonlinear steps in between).
+
+3. Practical reasons to prefer notch-first:
+   - If the 60 Hz noise has very high amplitude, it can dominate the signal
+     and potentially cause issues with edge effects or filter transients.
+     Removing it first reduces the dynamic range of the signal before bandpass
+     filtering.
+   - For quality control / visual inspection, it is easier to evaluate the
+     bandpass-filtered signal if line noise has already been removed.
+
+4. Bottom line: For Chandni's pipeline, the order does not matter
+   mathematically. But conventionally, notch is applied first or both are
+   applied together on continuous data.
+
+
+================================================================================
+QUESTION 6: Filter settings for interictal spike detection specifically
+================================================================================
+
+VERDICT: Chandni's settings (1-70 Hz bandpass) are well-aligned with the
+standard for interictal spike detection. Some considerations follow.
+
+EVIDENCE:
+
+1. Interictal spike frequency content:
+   - Spike duration: 20-70 ms, corresponding to frequency content primarily
+     in the 14-50 Hz range, with slower components extending down to ~0.5 Hz
+     (the slow wave following the spike).
+   - The standard clinical bandpass for visual spike review: 0.5-70 Hz or
+     1-70 Hz.
+   - A 1 Hz high-pass is acceptable. Going higher (e.g., 2 Hz) risks
+     attenuating the slow-wave component of spike-and-wave complexes.
+
+2. Jackson, Sharma, Tiarks, Rodriguez & Bassuk (2023), "Fast Detection and
+   Quantification of Interictal Spikes and Seizures in a Rodent Model of
+   Epilepsy Using an Automated Algorithm," Bio-protocol, 13(6), e4632.
+   DOI: 10.21769/BioProtoc.4632
+   - This paper presents an automated MATLAB algorithm for interictal spike
+     and seizure quantification in mice subjected to traumatic brain injury.
+   - Uses standard EEG preprocessing before applying amplitude-threshold and
+     wavelet-based detection.
+
+3. Automated spike detection systems:
+   - Many modern automated IED detectors (including deep learning approaches)
+     operate on data filtered to 0.5-70 Hz or 1-70 Hz.
+   - Tanaka et al. (bioRxiv 2020), "Epileptic Spike Detection Using Neural
+     Networks with Linear-Phase Convolutions," use data-driven FIR filter
+     banks that learn optimal passbands, but the input data is typically
+     pre-filtered to the 0.5-70 Hz range.
+   - Harvey et al. (2025), eNeuro, "Automated Classification of Sleep-Wake
+     States and Seizures in Mice," uses standard EEG preprocessing for rodent
+     seizure/spike analysis.
+
+4. Key consideration for spike detection -- do NOT over-filter:
+   - Low-pass cutoff too low (e.g., 30 Hz): smears the spike, reduces its
+     sharpness, makes detection harder.
+   - High-pass cutoff too high (e.g., > 2 Hz): can introduce ringing and
+     phase distortion that makes a single spike appear polyphasic.
+   - 1-70 Hz is the sweet spot for interictal spike detection.
+
+5. For ECoG specifically (vs. scalp EEG):
+   - ECoG has higher SNR than scalp EEG, so less aggressive filtering is
+     needed.
+   - Scalp EEG studies sometimes filter more aggressively (1-30 Hz or 1-40 Hz)
+     to remove muscle artifact, but ECoG does not need this.
+   - Chandni's 70 Hz upper cutoff is appropriate for ECoG spike detection.
+
+
+================================================================================
+QUESTION 7: Filter ringing artifacts near sharp transients
+================================================================================
+
+VERDICT: This is a real and well-documented concern, but it is manageable with
+Chandni's current settings. The 4th order Butterworth with zero-phase filtering
+is one of the better choices for minimizing ringing.
+
+EVIDENCE:
+
+1. The core problem -- filter ringing near sharp transients:
+   - de Cheveigne & Nelken (2019), Neuron:
+     Keywords of this paper explicitly include "ringing" and "distortions."
+     Filtering sharp transients (like interictal spikes or seizure onsets)
+     produces oscillatory "ringing" artifacts before and after the transient.
+     With zero-phase (non-causal) filtering, the ringing is symmetric (appears
+     both before AND after the event). With causal filtering, it appears only
+     after.
+
+2. Benar, Chauviere, Bartolomei & Wendling (2010), "Pitfalls of high-pass
+   filtering for detecting epileptic oscillations: a technical note on 'false'
+   ripples," Clinical Neurophysiology, 121(3), 301-310.
+   DOI: 10.1016/j.clinph.2009.10.019 (259 citations)
+   - This is the KEY paper on this topic.
+   - They demonstrate that high-pass filtering of sharp transients (epileptic
+     spikes) creates "false ripples" -- oscillatory artifacts in the 80-200 Hz
+     range that can be mistaken for genuine high-frequency oscillations (HFOs).
+   - Critical finding: "Two types of events were shown to produce oscillations
+     after filtering that could be confounded with actual oscillatory activity:
+     sharp transients and harmonics of non-sinusoidal signals."
+   - Their recommendation: always compare filtered traces to the original
+     unfiltered traces to verify that apparent oscillations are genuine.
+
+3. Why Chandni's settings mitigate this risk:
+   - The false ripple problem is most severe with HIGH-PASS filtering at
+     80+ Hz (for HFO detection). Chandni's 1 Hz high-pass is very gentle
+     and will produce negligible ringing.
+   - The LOW-PASS at 70 Hz will produce some smoothing of spike peaks but
+     minimal ringing, because Butterworth filters have a monotonic (no-ripple)
+     frequency response.
+   - Chebyshev or elliptic filters would produce MORE ringing due to their
+     passband/stopband ripple. Butterworth is the best IIR choice for
+     minimizing ringing.
+
+4. Filter order and ringing:
+   - Higher order = steeper transition band = more ringing near sharp
+     transients.
+   - A 4th order Butterworth (effective 8th order with filtfilt) is a
+     moderate choice. Going to 8th order nominal (16th effective) would
+     produce noticeably more ringing.
+   - Widmann et al. (2015) recommend using the lowest filter order that
+     achieves the needed frequency separation.
+
+5. Practical recommendations:
+   - For interictal spike DETECTION (not HFO analysis), ringing from a 1-70
+     Hz 4th-order Butterworth bandpass is minimal and unlikely to produce
+     false detections.
+   - If Chandni later extends analysis to HFOs (80-500 Hz), the Benar et al.
+     (2010) warnings become critical, and time-frequency methods (wavelets,
+     matching pursuit) should be used instead of or in addition to simple
+     bandpass filtering.
+   - Always visually inspect a sample of detected spikes overlaid on the
+     unfiltered trace to confirm that filtering has not created artifacts.
+
+
+================================================================================
+OVERALL ASSESSMENT OF CHANDNI'S PIPELINE
+================================================================================
+
+  Setting                          Assessment
+  -------                          ----------
+  4th order Butterworth            APPROPRIATE -- standard choice
+  Bandpass 1-70 Hz                 APPROPRIATE -- matches clinical/research
+                                   standard for interictal spike detection
+  60 Hz notch, Q=30               APPROPRIATE -- standard Q value, produces
+                                   ~2 Hz notch width
+  Zero-phase (sosfiltfilt)         CORRECT -- recommended for offline analysis
+  SOS form                         CORRECT -- numerically stable, per SciPy
+                                   official recommendation
+
+MINOR RECOMMENDATIONS:
+
+1. If 60 Hz noise has visible harmonics at 120/180 Hz AND the analysis is
+   ever extended above 70 Hz, add notch filters at those harmonics.
+
+2. Verify that the implementation uses scipy.signal.butter with output='sos'
+   (not 'ba'). A 4th order bandpass in ba-form produces an 8th order
+   polynomial that is in the numerical instability zone.
+
+3. Consider visually spot-checking a few detected spikes against the raw
+   (unfiltered) trace to confirm no ringing artifacts are being misclassified.
+
+4. The filter order with sosfiltfilt is effectively doubled (4th order
+   becomes 8th order effective). This is fine and standard, but should be
+   documented/reported as "4th order Butterworth, zero-phase (effective 8th
+   order)."
+
+5. Apply filters to continuous data before epoching to avoid edge artifacts
+   at epoch boundaries (per Brainstorm documentation recommendation).
+
+
+================================================================================
+KEY REFERENCES
+================================================================================
+
+[1] Widmann A, Schroger E, Maess B (2015). "Digital filter design for
+    electrophysiological data -- a practical approach." J Neuroscience Methods,
+    250, 34-46. DOI: 10.1016/j.jneumeth.2014.08.002
+
+[2] de Cheveigne A, Nelken I (2019). "Filters: When, Why, and How (Not) to
+    Use Them." Neuron, 102(2), 280-293. DOI: 10.1016/j.neuron.2019.02.039
+
+[3] Benar CG, Chauviere L, Bartolomei F, Wendling F (2010). "Pitfalls of
+    high-pass filtering for detecting epileptic oscillations: a technical note
+    on 'false' ripples." Clinical Neurophysiology, 121(3), 301-310.
+    DOI: 10.1016/j.clinph.2009.10.019
+
+[4] Widmann A, Schroger E (2012). "Filter effects and filter artifacts in the
+    analysis of electrophysiological data." Frontiers in Psychology, 3:233.
+    DOI: 10.3389/fpsyg.2012.00233
+
+[5] Jackson KJ, Sharma S, Tiarks G, Rodriguez S, Bassuk AG (2023). "Fast
+    Detection and Quantification of Interictal Spikes and Seizures in a Rodent
+    Model of Epilepsy Using an Automated Algorithm." Bio-protocol, 13(6),
+    e4632. DOI: 10.21769/BioProtoc.4632
+
+[6] Bigdely-Shamlo N, Mullen T, Kothe C, Su KM, Robbins KA (2015). "The
+    PREP pipeline: standardized preprocessing for large-scale EEG analysis."
+    Frontiers in Neuroinformatics, 9:16. DOI: 10.3389/fninf.2015.00016
+
+[7] Klug M, Gramann K (2020). "Identifying key factors for improving ICA-based
+    decomposition of EEG data in mobile and stationary experiments." European
+    J. Neuroscience. (Referenced in EEGLAB filtering tutorial)
+
+[8] SciPy v1.17.0 Documentation -- scipy.signal.filtfilt, scipy.signal.
+    sosfiltfilt, scipy.signal.butter.
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.filtfilt.html
+
+[9] MNE-Python Documentation -- "Background information on filtering"
+    https://mne.tools/stable/auto_tutorials/preprocessing/25_background_filtering.html
+
+[10] Open Ephys GUI Documentation -- Bandpass Filter plugin
+     https://open-ephys.github.io/gui-docs/User-Manual/Plugins/Bandpass-Filter.html
+
+[11] EEGLAB Wiki -- Filtering tutorial
+     https://eeglab.org/tutorials/05_Preprocess/Filtering.html
+
+[12] Brainstorm Tutorials -- Power spectrum and frequency filters
+     https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsFilter
+
+[13] Harvey BJ, Olah VJ, et al. (2025). "Automated Classification of
+     Sleep-Wake States and Seizures in Mice." eNeuro, 12(10).
+     DOI: 10.1523/ENEURO.0226-25.2025
+
+[14] Luck SJ (2014). "An Introduction to the Event-Related Potential
+     Technique," 2nd Ed. MIT Press. (On linear vs nonlinear processing order)
