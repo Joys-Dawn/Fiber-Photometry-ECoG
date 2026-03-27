@@ -64,6 +64,11 @@ def get_signal_and_time(s: Session) -> tuple[np.ndarray, np.ndarray, float]:
     return proc.photometry.dff_zscore, proc.time, proc.fs
 
 
+def get_ecog_filtered(s: Session) -> np.ndarray:
+    """Return filtered ECoG signal from a session's processed data."""
+    return s.processed.ecog_filtered
+
+
 def get_temperature(s: Session) -> np.ndarray:
     """Return smoothed temperature trace from a session's processed data."""
     return s.processed.temperature_smooth

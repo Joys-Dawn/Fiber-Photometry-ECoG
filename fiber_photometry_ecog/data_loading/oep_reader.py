@@ -23,12 +23,15 @@ Some setups (e.g. Meiling's) have one stream with ADC channels mixed in.
 The reader handles both: user specifies which stream and channel indices to use.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 import json
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,12 +65,36 @@ def _find_recording_dir(session_dir: Path, recording_num: int = 1) -> Path:
             f"No 'Record Node' directories found in {session_dir}"
         )
 
-    # Use the first record node (typically Record Node 101)
+    # Use the first record node (typically Record Node 101 or 104)
     rec_node = record_nodes[0]
-    rec_dir = rec_node / "experiment1" / f"recording{recording_num}"
-    if not rec_dir.exists():
-        raise FileNotFoundError(f"Recording directory not found: {rec_dir}")
-    return rec_dir
+
+    # Find experiment and recording directories (handle experiment1, experiment2, etc.)
+    experiments = sorted(
+        [d for d in rec_node.iterdir() if d.is_dir() and d.name.startswith("experiment")],
+        key=lambda p: p.name,
+    )
+    if not experiments:
+        raise FileNotFoundError(f"No experiment directories found in {rec_node}")
+
+    # Search for the requested recording across all experiments
+    for exp_dir in experiments:
+        rec_dir = exp_dir / f"recording{recording_num}"
+        if rec_dir.exists():
+            return rec_dir
+
+    # Fallback: find any recording in any experiment
+    for exp_dir in experiments:
+        recordings = sorted(
+            [d for d in exp_dir.iterdir() if d.is_dir() and d.name.startswith("recording")],
+            key=lambda p: p.name,
+        )
+        if recordings:
+            rec_dir = recordings[0]
+            logger.info(f"recording{recording_num} not found, using {exp_dir.name}/{rec_dir.name}")
+            return rec_dir
+
+    raise FileNotFoundError(f"No recording directories found in {rec_node}")
+
 
 
 def _load_oebin(rec_dir: Path) -> Dict[str, Any]:
@@ -125,11 +152,9 @@ def _load_ttl_events(rec_dir: Path, oebin: Dict[str, Any]) -> tuple[np.ndarray, 
 
 def read_oep(
     session_dir: str | Path,
-    ecog_channel: int = 3,
-    emg_channel: Optional[int] = None,
-    temp_adc_channel: int = 1,
+    ecog_channel: int = 2,
+    emg_channel: Optional[int] = 3,
     ecog_stream_idx: int = 0,
-    temp_stream_idx: Optional[int] = None,
     recording_num: int = 1,
 ) -> OEPData:
     """Read an Open Ephys binary recording session.
@@ -137,13 +162,9 @@ def read_oep(
     Parameters
     ----------
     session_dir : path to the session directory (contains Record Node folders)
-    ecog_channel : 1-indexed ECoG channel number (default 3, per Chandni's cfg)
-    emg_channel : 1-indexed EMG channel number, or None to skip EMG loading
-    temp_adc_channel : 1-indexed ADC channel for temperature (default 1)
+    ecog_channel : 1-indexed ECoG channel number (default 2)
+    emg_channel : 1-indexed EMG channel number (default 3), or None to skip
     ecog_stream_idx : 0-indexed stream for ECoG data (default 0)
-    temp_stream_idx : 0-indexed stream for temperature. If None, uses the same
-        stream as ECoG (single-stream setup where ADC channels follow headstage
-        channels in the same continuous.dat).
     recording_num : which recording to load (default 1)
 
     Returns
@@ -152,12 +173,12 @@ def read_oep(
 
     Notes
     -----
-    Chandni's setup: ecog_stream_idx=0, temp_stream_idx=1 (two separate streams).
-    Meiling's setup: ecog_stream_idx=0, temp_stream_idx=None (ADC in same stream).
+    Temperature is always loaded from the NI-DAQ stream (channel 1 / AI0),
+    matching Chandni's MATLAB config (cfg.NIstream, cfg.tempADC=1).  When
+    only one stream exists the NI-DAQ *is* that stream, so channel 1 is used.
 
     Channel indexing follows Open Ephys convention (1-indexed in the GUI,
-    converted to 0-indexed internally). In a single-stream setup with 16
-    headstage + 8 ADC channels, ADC1 is at 0-indexed position 16.
+    converted to 0-indexed internally).
     """
     session_dir = Path(session_dir)
     if not session_dir.exists():
@@ -207,33 +228,31 @@ def read_oep(
         emg_signal *= emg_bit_volts
 
     # --- Load temperature ---
-    if temp_stream_idx is not None and temp_stream_idx != ecog_stream_idx:
-        # Separate NI-DAQ stream (Chandni's setup)
-        if temp_stream_idx >= len(continuous_streams):
-            raise ValueError(
-                f"Temperature stream index {temp_stream_idx} out of range"
-            )
-        temp_stream_info = continuous_streams[temp_stream_idx]
-        temp_data, _, _ = _load_continuous_stream(rec_dir, temp_stream_info)
-        temp_ch_idx = temp_adc_channel - 1
-        temp_bit_volts = temp_stream_info["channels"][temp_ch_idx]["bit_volts"]
-    else:
-        # Same stream — ADC channels follow headstage channels
-        # Find the ADC channel by name
-        channels = ecog_stream_info["channels"]
-        adc_name = f"ADC{temp_adc_channel}"
-        temp_ch_idx = None
-        for i, ch in enumerate(channels):
-            if ch["channel_name"] == adc_name:
-                temp_ch_idx = i
+    # Per Chandni's MATLAB code (cfg.NIstream, cfg.tempADC=1), temperature
+    # is always channel 1 (AI0) on the NI-DAQ stream.
+    if len(continuous_streams) > 1:
+        # Two-stream setup: find the non-ECoG stream (NI-DAQ)
+        ni_idx = None
+        for si, s in enumerate(continuous_streams):
+            if si != ecog_stream_idx and "NI" in s.get("source_processor_name", ""):
+                ni_idx = si
                 break
-        if temp_ch_idx is None:
-            raise ValueError(
-                f"ADC channel '{adc_name}' not found in stream. "
-                f"Available: {[ch['channel_name'] for ch in channels]}"
-            )
+        if ni_idx is None:
+            ni_idx = 1 if ecog_stream_idx == 0 else 0
+
+        temp_stream_info = continuous_streams[ni_idx]
+        temp_data, _, _ = _load_continuous_stream(rec_dir, temp_stream_info)
+        temp_ch_idx = 0  # channel 1 (AI0)
+        temp_bit_volts = temp_stream_info["channels"][temp_ch_idx]["bit_volts"]
+        logger.info(
+            "Temperature: stream %d (%s) channel 1",
+            ni_idx, temp_stream_info["source_processor_name"],
+        )
+    else:
+        # Single-stream setup: NI-DAQ is the only stream, channel 1
+        temp_ch_idx = 0
         temp_data = ecog_data
-        temp_bit_volts = channels[temp_ch_idx]["bit_volts"]
+        temp_bit_volts = ecog_stream_info["channels"][temp_ch_idx]["bit_volts"]
 
     temperature_raw = temp_data[temp_ch_idx, :].astype(np.float64)
 

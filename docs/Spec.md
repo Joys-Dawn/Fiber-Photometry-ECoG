@@ -30,21 +30,46 @@
 | Photometry (470 + 405) | pyPhotometry | `.ppd` (analog_1, analog_2) | From PPD metadata, user-editable |
 | Sync signal | pyPhotometry | `.ppd` (digital_1) | — |
 | ECoG | Open Ephys | Binary (stream 1) | From OEP metadata, user-editable |
-| Temperature | NI-USB 6009 DAQ | Open Ephys binary (stream 2, ADC ch1) | From recording metadata |
-| Default ECoG channel | — | — | Channel 3, user-editable |
+| Temperature | NI-USB 6009 DAQ | Open Ephys binary (stream 1, ch17) | From recording metadata |
+
+| Channel | Default | User-Editable |
+|---------|---------|---------------|
+| ECoG | Channel 2 | Yes |
+| EMG | Channel 3 | Yes |
+| Temperature | Channel 17 | Yes |
+
+### Folder Structure
+
+Data is organized in a parent folder per experiment:
+
+```
+experiment/                    (e.g., "LC GCaMP")
+├── data_log.xlsx              (experiment log — see Workflow below)
+├── Scn1a_seizure/             (cohort subfolder)
+│   ├── mouse1234_session1/    (one sub-subfolder per mouse_session)
+│   │   ├── OpenEphys_folder/  (ECoG, EMG, temperature)
+│   │   └── photometry.ppd     (fiber photometry file)
+│   └── mouse5678_session2/
+├── Scn1a_no_seizure/
+└── WT/
+```
+
+The tool scans the selected experiment folder, discovers cohort subfolders and session sub-subfolders automatically. The user selects the experiment folder; individual file picking is not required.
 
 ## 5. Metadata (Per Session)
 
-### Mouse Info (User-Entered)
+### Mouse Info (from data log)
 
 | Field | Source |
 |-------|--------|
-| Experiment (fluorescent tool / brain region / cell type) | User enter |
-| Mouse ID # | User enter |
-| Heating session # | User enter |
-| Genotype | User enter |
-| Number of seizures recorded (0, 1, >1) | User enter |
-| Did the mouse survive? | User enter |
+| Experiment (fluorescent tool / brain region / cell type) | Data log |
+| Mouse ID # | Data log (matched to folder name) |
+| Heating session # | Data log (matched by date to OEP folder) |
+| Genotype | Data log (`genotype` column: H=Scn1a, W=WT) |
+| Number of seizures recorded (0, 1, >1) | Data log (`seizure` column) |
+| SUDEP (yes/no) | Data log (`fatal` column) |
+| Include session (yes/no) | Data log (`exclude` column, inverted) |
+| Exclusion reason | Data log (`reason` column) |
 
 ### Data Collection Info
 
@@ -52,13 +77,15 @@
 |-------|--------|
 | Sampling frequency: photometry | Default from file → user can edit |
 | Sampling frequency: ECoG | Default from file → user can edit |
-| Channel(s): ECoG | Default ch3 → user can edit |
+| Channel: ECoG | Default ch2 → user can edit |
+| Channel: EMG | Default ch3 → user can edit |
+| Channel: Temperature | Default ch17 → user can edit |
 
 ### Key Experimental Landmarks — All Mice
 
 | Field | Source |
 |-------|--------|
-| Baseline temperature | Calculation from temp curve |
+| Baseline temperature | User enter or calculation from temp curve |
 | Heating start time | User enter or calculate from temp curve |
 | Max temperature | Calculation from temp curve |
 | Time to max temperature | Calculation from temp curve |
@@ -110,7 +137,7 @@ Both control groups should have same mean & similar distribution to experimental
 
 ### Step 1: ECoG
 
-- Select the channel (default ch3, user-configurable)
+- Select the channel (default ch2, user-configurable)
 - Filter raw signal: 4th order Butterworth bandpass 1–70 Hz + 60 Hz notch (Q=30), zero-phase (`sosfiltfilt`)
 - Identify interictal spikes (spikes occurring outside the seizure period)
 
@@ -135,7 +162,7 @@ Three correction strategies available (user selects):
 
 **Then for all strategies:**
 - z-score relative to baseline (recording start → heating start) → **use for all analyses involving means**
-- High-pass filter (2nd order Butterworth, 0.01 Hz cutoff, configurable) and identify transients → **use for all analyses involving transients**
+- High-pass filter (2nd order Butterworth, 0.01 Hz cutoff, configurable), then z-score relative to baseline, then identify transients → **use for all analyses involving transients** (HPF before z-score so baseline stats are not contaminated by slow drift)
 
 **Transient detection parameters (configurable):**
 - Minimum peak prominence: 1 (in z-score units)
@@ -161,6 +188,36 @@ Three correction strategies available (user selects):
 
 1. Strategy for fiber photometry preprocessing (A, B, or C)
 2. Whether controls should be defined by heating time or by temperature
+
+## 6b. Workflow (Data Log Steps)
+
+The tool follows a 3-step workflow, mirroring a data log:
+
+### Step 1: Load & Preprocess
+
+User selects the experiment folder. The tool:
+1. Finds the data log (Excel file) in the experiment folder
+2. Scans cohort subfolders and session sub-subfolders for OEP + PPD data
+3. Matches each data log row to a session folder by mouse ID + date
+4. Populates all metadata automatically (genotype, seizure, SUDEP, include/exclude, heating start, etc.)
+5. User sets channel numbers (defaults: ECoG=2, EMG=3, Temp=17) — applied to all sessions
+6. User clicks "Load All Sessions" to batch-load and sync all included sessions
+
+The code then preprocesses the data and outputs raw + preprocessed traces.
+
+### Step 2: Review & Mark Landmarks
+
+The preprocessed ECoG trace is displayed in an **interactive GUI** where the user can click on the trace to mark seizure landmarks:
+- EEC (earliest electrographic change)
+- UEO (unequivocal electrographic onset)
+- OFF (seizure offset)
+
+User also enters:
+- Include yes/no (if no, reason for exclusion)
+
+### Step 3: Analysis & Output
+
+The code calculates all parameters (Section 8), runs statistics, and generates plots. This step runs after all sessions have completed Steps 1-2.
 
 ## 7. Output — Traces
 

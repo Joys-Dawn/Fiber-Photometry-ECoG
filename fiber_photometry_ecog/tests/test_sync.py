@@ -352,7 +352,7 @@ class TestRealOEP:
         assert oep.fs == 1000.0
         assert len(oep.ecog) > 0
         assert len(oep.ecog) == len(oep.temperature_raw)
-        assert oep.emg is None  # no EMG channel requested
+        assert oep.emg is not None  # EMG channel 3 loaded by default
         assert oep.temp_bit_volts > 0
         assert len(oep.ttl_states) > 0
 

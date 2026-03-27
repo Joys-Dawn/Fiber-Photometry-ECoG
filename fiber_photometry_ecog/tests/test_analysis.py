@@ -83,12 +83,16 @@ def _make_session(
         equiv_ueo_temp=ueo_temp if n_seizures == 0 else None,
     )
 
+    # Synthetic ECoG: zero signal by default
+    ecog = np.zeros(n_samples)
+
     processed = ProcessedData(
         photometry=PhotometryResult(
             dff=zdff,
             dff_zscore=zdff,
             dff_hpf=zdff,
         ),
+        ecog_filtered=ecog,
         temperature_smooth=temperature,
         time=time,
         fs=fs,
@@ -391,23 +395,40 @@ class TestPostictal:
 # ---------------------------------------------------------------------------
 
 class TestSpikeTriggered:
-    def test_basic_sta(self):
+    def test_basic_sta_zero_centered(self):
         s = _make_session(fs=100.0, duration_s=300.0, signal_value=1.0)
         spike_times = np.array([50.0, 100.0, 200.0])
         config = AnalysisConfig(spike_triggered_window_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
         sr = result.session_results[0]
         assert sr.n_spikes == 3
-        # Constant signal → mean trace all 1.0
-        np.testing.assert_allclose(sr.mean_trace, 1.0)
+        # Constant signal → zero-centered → mean trace all 0.0
+        np.testing.assert_allclose(sr.mean_trace, 0.0)
 
-    def test_auc(self):
+    def test_auc_zero_centered(self):
         s = _make_session(fs=100.0, duration_s=300.0, signal_value=2.0)
         spike_times = np.array([150.0])
         config = AnalysisConfig(spike_triggered_window_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
-        # Constant signal of 2.0 over 10s → AUC ≈ 20.0
-        assert result.group_auc == pytest.approx(20.0, rel=0.01)
+        # Constant signal zero-centered → AUC = 0.0
+        assert result.group_auc == pytest.approx(0.0, abs=1e-10)
+
+    def test_nonconstant_sta(self):
+        """Non-constant signal: a step at the spike should produce non-zero AUC."""
+        s = _make_session(fs=100.0, duration_s=300.0, signal_value=0.0)
+        # Create a step: signal goes from 0 to 1.0 at t=150s
+        step_idx = int(150.0 * 100.0)
+        s.processed.photometry.dff_zscore[step_idx:] = 1.0
+        spike_times = np.array([150.0])
+        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        result = compute_spike_triggered_average([s], [spike_times], config)
+        sr = result.session_results[0]
+        # At t=0 (spike), value is 1.0. Before: 0-1=-1. After: 1-1=0.
+        # mean_trace should be -1 before spike, 0 after
+        assert sr.mean_trace[0] == pytest.approx(-1.0)
+        assert sr.mean_trace[-1] == pytest.approx(0.0)
+        # AUC should be negative (more area below zero than above)
+        assert sr.auc < 0
 
     def test_edge_spikes_excluded(self):
         s = _make_session(fs=100.0, duration_s=300.0)
@@ -425,12 +446,38 @@ class TestSpikeTriggered:
         assert result.session_results[0].n_spikes == 0
         assert np.isnan(result.group_auc)
 
-    def test_group_average(self):
+    def test_group_average_zero_centered(self):
         s1 = _make_session(mouse_id="m1", fs=100.0, duration_s=300.0, signal_value=2.0)
         s2 = _make_session(mouse_id="m2", fs=100.0, duration_s=300.0, signal_value=4.0)
         spikes1 = np.array([150.0])
         spikes2 = np.array([150.0])
         config = AnalysisConfig(spike_triggered_window_s=5.0)
         result = compute_spike_triggered_average([s1, s2], [spikes1, spikes2], config)
-        # Group mean should be (2+4)/2 = 3.0
-        np.testing.assert_allclose(result.group_mean, 3.0)
+        # Both constant signals → zero-centered → group mean = 0.0
+        np.testing.assert_allclose(result.group_mean, 0.0)
+
+    def test_eeg_polarity_alignment(self):
+        """EEG segments with negative spikes should be flipped upward."""
+        s = _make_session(fs=100.0, duration_s=300.0)
+        # Create a negative EEG spike slightly before t=150s
+        # (offset from center so zero-centering doesn't cancel it)
+        spike_idx = int(150.0 * 100.0)
+        s.processed.ecog_filtered[spike_idx - 3:spike_idx] = -2.0
+        spike_times = np.array([150.0])
+        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        result = compute_spike_triggered_average([s], [spike_times], config)
+        sr = result.session_results[0]
+        window_samples = int(5.0 * 100.0)
+        center = window_samples
+        # The spike region before center should be positive after flipping
+        # (original was -2.0, flipped to +2.0, then zero-centered by value at center=0)
+        assert sr.eeg_mean_trace[center - 2] > 0
+
+    def test_eeg_group_results_present(self):
+        s = _make_session(fs=100.0, duration_s=300.0)
+        spike_times = np.array([150.0])
+        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        result = compute_spike_triggered_average([s], [spike_times], config)
+        assert result.eeg_group_mean is not None
+        assert result.eeg_group_sem is not None
+        assert len(result.eeg_group_mean) == len(result.group_mean)

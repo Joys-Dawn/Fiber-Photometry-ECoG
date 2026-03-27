@@ -153,6 +153,7 @@ def compute_ictal_mean(
         # Seizure/equivalent period mean
         ueo_t = get_ueo_time(s)
         off_t = get_off_time(s)
+
         i_ueo = time_to_index(ueo_t, fs)
         i_off = time_to_index(off_t, fs)
         sz_mean = float(np.mean(signal[i_ueo:i_off]))

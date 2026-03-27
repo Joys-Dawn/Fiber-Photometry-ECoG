@@ -102,10 +102,16 @@ class Session:
     genotype: str                           # "Scn1a" | "WT"
     heating_session: int = 1
     n_seizures: int = 0                     # 0, 1, >1
-    survived: bool = True
+    sudep: bool = False                    # Sudden Unexpected Death in Epilepsy
+    include_session: bool = True            # whether to include in analysis
+    exclusion_reason: Optional[str] = None  # if include_session=False, why
     experiment_label: str = ""              # e.g. "GCaMP / mPFC / PV"
     landmarks: Optional[SessionLandmarks] = None
     preprocessing_config: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     raw: Optional[RawData] = None
     processed: Optional[ProcessedData] = None
     transients: List[TransientEvent] = field(default_factory=list)
+    spikes: List[SpikeEvent] = field(default_factory=list)
+    cohort: str = ""
+    date: Optional[str] = None
+    session_name: Optional[str] = None

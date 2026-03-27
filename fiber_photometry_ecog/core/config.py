@@ -62,10 +62,20 @@ class SpikeDetectionConfig:
 class TransientConfig:
     """Transient detection parameters."""
     method: str = "prominence"       # "prominence" or "mad"
-    min_prominence: float = 1.0      # for prominence method (Chandni's default)
+    min_prominence: float = 1.0      # z-score units
     max_width_s: float = 8.0         # seconds
     trough_window_s: float = 2.5     # seconds each side of peak
     mad_k: float = 3.0               # for MAD method: median + k * MAD
+
+
+# Strategy-specific defaults. A uses whole-signal z-score (STD=1, so 1.0 is
+# appropriate). B/C use baseline z-score (tiny denominator inflates values,
+# so 2.6 SD per Donka et al. 2025 PASTa toolbox).
+TRANSIENT_CONFIGS = {
+    "A": TransientConfig(min_prominence=1.0),
+    "B": TransientConfig(min_prominence=2.6),
+    "C": TransientConfig(min_prominence=2.6),
+}
 
 
 @dataclass
@@ -82,7 +92,6 @@ class PreprocessingConfig:
     """Top-level config aggregating all preprocessing parameters."""
     ecog: ECoGConfig = field(default_factory=ECoGConfig)
     photometry: PhotometryConfig = field(default_factory=PhotometryConfig)
-    transient: TransientConfig = field(default_factory=TransientConfig)
     temperature: TemperatureConfig = field(default_factory=TemperatureConfig)
     spike_detection: SpikeDetectionConfig = field(default_factory=SpikeDetectionConfig)
 

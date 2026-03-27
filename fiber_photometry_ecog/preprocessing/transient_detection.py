@@ -5,8 +5,10 @@ Two methods:
 1. Prominence-based: scipy.signal.find_peaks with prominence threshold
 2. MAD-based: adaptive threshold using median + k * MAD
 
-Transient properties (amplitude, half-width) are measured on raw dF/F,
-NOT z-scored signal, per Wallace et al. 2025.
+Detection is performed on the z-scored HPF signal (prominence threshold
+is in z-score units). Transient properties (amplitude, half-width) are
+measured on raw dF/F at the detected peak locations, per Wallace et al.
+2025 and Chandni's code (detect_transients.m).
 """
 
 from typing import Optional, List
@@ -19,19 +21,26 @@ from ..core.data_models import TransientEvent
 
 
 def detect_transients(
-    dff: np.ndarray,
+    zdff_hpf: np.ndarray,
+    dff_raw: np.ndarray,
     fs: float,
     config: TransientConfig | None = None,
     temperature: Optional[np.ndarray] = None,
 ) -> List[TransientEvent]:
-    """Detect calcium transients in a dF/F signal.
+    """Detect calcium transients and measure their properties.
+
+    Peak detection runs on the z-scored HPF signal (zdff_hpf) where the
+    prominence threshold (default 1.0) is in z-score units. Properties
+    (amplitude, peak-to-trough, half-width) are measured on raw dF/F at
+    the same peak locations, per Wallace 2025.
 
     Parameters
     ----------
-    dff : 1-D dF/F signal (raw, not z-scored)
+    zdff_hpf : z-scored high-pass filtered dF/F (for detection)
+    dff_raw : raw dF/F signal (for property measurement)
     fs : sampling rate (Hz)
     config : detection parameters (uses defaults if None)
-    temperature : optional temperature trace (same length as dff) for
+    temperature : optional temperature trace (same length) for
         cross-referencing transient events
 
     Returns
@@ -42,15 +51,16 @@ def detect_transients(
         config = TransientConfig()
 
     if config.method == "prominence":
-        return _detect_prominence(dff, fs, config, temperature)
+        return _detect_prominence(zdff_hpf, dff_raw, fs, config, temperature)
     elif config.method == "mad":
-        return _detect_mad(dff, fs, config, temperature)
+        return _detect_mad(zdff_hpf, dff_raw, fs, config, temperature)
     else:
         raise ValueError(f"Unknown transient detection method: {config.method}")
 
 
 def _detect_prominence(
-    dff: np.ndarray,
+    zdff_hpf: np.ndarray,
+    dff_raw: np.ndarray,
     fs: float,
     config: TransientConfig,
     temperature: Optional[np.ndarray],
@@ -59,56 +69,61 @@ def _detect_prominence(
     max_width_samples = int(config.max_width_s * fs)
 
     peaks, properties = find_peaks(
-        dff,
+        zdff_hpf,
         prominence=config.min_prominence,
         width=(None, max_width_samples),
         wlen=max_width_samples * 2,
     )
 
-    return _build_events(dff, fs, peaks, properties, config, temperature)
+    return _build_events(zdff_hpf, dff_raw, fs, peaks, properties, config, temperature)
 
 
 def _detect_mad(
-    dff: np.ndarray,
+    zdff_hpf: np.ndarray,
+    dff_raw: np.ndarray,
     fs: float,
     config: TransientConfig,
     temperature: Optional[np.ndarray],
 ) -> List[TransientEvent]:
     """MAD-based adaptive threshold detection."""
-    median_val = np.median(dff)
-    mad = np.median(np.abs(dff - median_val))
+    median_val = np.median(zdff_hpf)
+    mad = np.median(np.abs(zdff_hpf - median_val))
     threshold = median_val + config.mad_k * mad
 
     max_width_samples = int(config.max_width_s * fs)
 
     peaks, properties = find_peaks(
-        dff,
+        zdff_hpf,
         height=threshold,
         width=(None, max_width_samples),
         prominence=0,  # still compute prominence for reporting
         wlen=max_width_samples * 2,
     )
 
-    return _build_events(dff, fs, peaks, properties, config, temperature)
+    return _build_events(zdff_hpf, dff_raw, fs, peaks, properties, config, temperature)
 
 
 def _build_events(
-    dff: np.ndarray,
+    zdff_hpf: np.ndarray,
+    dff_raw: np.ndarray,
     fs: float,
     peaks: np.ndarray,
     properties: dict,
     config: TransientConfig,
     temperature: Optional[np.ndarray],
 ) -> List[TransientEvent]:
-    """Convert peak indices + properties into TransientEvent list."""
+    """Convert peak indices + properties into TransientEvent list.
+
+    Peak locations come from zdff_hpf. Amplitude and peak-to-trough are
+    measured on dff_raw. Half-width is measured on zdff_hpf (the detection
+    signal) since peaks may not be local maxima in the raw signal.
+    """
     events = []
     trough_window = int(config.trough_window_s * fs)
 
-    # Get half-widths at 50% prominence
+    # Get half-widths at 50% prominence on the detection signal (zdff_hpf)
     if len(peaks) > 0:
-        widths, width_heights, left_ips, right_ips = peak_widths(
-            dff, peaks, rel_height=0.5
-        )
+        widths, _, _, _ = peak_widths(zdff_hpf, peaks, rel_height=0.5)
     else:
         widths = np.array([])
 
@@ -116,12 +131,14 @@ def _build_events(
 
     for i, peak_idx in enumerate(peaks):
         peak_time = peak_idx / fs
-        peak_amp = float(dff[peak_idx])
 
-        # Trough: minimum in window around peak
+        # Measure amplitude on raw dF/F (per Wallace 2025)
+        peak_amp = float(dff_raw[peak_idx])
+
+        # Trough: minimum in window around peak on raw dF/F
         left = max(0, peak_idx - trough_window)
-        right = min(len(dff), peak_idx + trough_window)
-        trough_amp = float(np.min(dff[left:right]))
+        right = min(len(dff_raw), peak_idx + trough_window)
+        trough_amp = float(np.min(dff_raw[left:right]))
 
         half_w = float(widths[i] / fs) if i < len(widths) else 0.0
         prom = float(prominences[i]) if i < len(prominences) else 0.0

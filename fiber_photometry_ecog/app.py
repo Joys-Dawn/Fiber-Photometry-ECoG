@@ -14,15 +14,17 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 
 from .core.config import (
     AnalysisConfig,
-    ECoGConfig,
     PhotometryConfig,
     PreprocessingConfig,
-    SpikeDetectionConfig,
-    TransientConfig,
+    TRANSIENT_CONFIGS,
 )
 from .core.data_models import (
     ProcessedData,
@@ -30,7 +32,14 @@ from .core.data_models import (
     Session,
     SessionLandmarks,
 )
-from .data_loading import read_ppd, read_oep, synchronize
+from .core.session_io import (
+    save_session, load_session, get_sessions_dir,
+    find_saved_sessions, find_available_strategies,
+)
+from .data_loading import (
+    read_ppd, read_oep, synchronize,
+    scan_experiment_folder, extract_date_from_oep, read_data_log,
+)
 from .preprocessing import filter_ecog, process_temperature, detect_transients, detect_spikes
 from .preprocessing.photometry import (
     ChandniStrategy,
@@ -146,83 +155,37 @@ class FiberPhotometryApp:
     # ==================================================================
 
     def _setup_loading_tab(self, parent: ttk.Frame) -> None:
-        # --- Add session section ---
-        add_frame = ttk.LabelFrame(parent, text="Add Session", padding=10)
-        add_frame.pack(fill="x", padx=5, pady=5)
+        # --- Experiment folder ---
+        folder_frame = ttk.LabelFrame(parent, text="Experiment Folder", padding=10)
+        folder_frame.pack(fill="x", padx=5, pady=5)
 
-        # Row 1: PPD file
-        row1 = ttk.Frame(add_frame)
+        row1 = ttk.Frame(folder_frame)
         row1.pack(fill="x", pady=2)
-        ttk.Label(row1, text="PPD file:").pack(side="left")
-        self.ppd_path_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self.ppd_path_var, width=70).pack(side="left", fill="x", expand=True, padx=5)
-        ttk.Button(row1, text="Browse...", command=self._browse_ppd).pack(side="right")
+        ttk.Label(row1, text="Experiment folder:").pack(side="left")
+        self.experiment_path_var = tk.StringVar()
+        ttk.Entry(row1, textvariable=self.experiment_path_var, width=60).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(row1, text="Browse...", command=self._browse_experiment_folder).pack(side="right", padx=(0, 5))
+        ttk.Button(row1, text="Scan & Load", command=self._scan_and_populate).pack(side="right")
 
-        # Row 2: OEP folder
-        row2 = ttk.Frame(add_frame)
-        row2.pack(fill="x", pady=2)
-        ttk.Label(row2, text="OEP folder:").pack(side="left")
-        self.oep_path_var = tk.StringVar()
-        ttk.Entry(row2, textvariable=self.oep_path_var, width=70).pack(side="left", fill="x", expand=True, padx=5)
-        ttk.Button(row2, text="Browse...", command=self._browse_oep).pack(side="right")
-
-        # Row 3: Metadata
-        meta_frame = ttk.Frame(add_frame)
-        meta_frame.pack(fill="x", pady=5)
-
-        ttk.Label(meta_frame, text="Mouse ID:").pack(side="left")
-        self.mouse_id_var = tk.StringVar()
-        ttk.Entry(meta_frame, textvariable=self.mouse_id_var, width=12).pack(side="left", padx=(2, 10))
-
-        ttk.Label(meta_frame, text="Genotype:").pack(side="left")
-        self.genotype_var = tk.StringVar(value="Scn1a")
-        ttk.Combobox(meta_frame, textvariable=self.genotype_var, values=["Scn1a", "WT"],
-                      state="readonly", width=8).pack(side="left", padx=(2, 10))
-
-        ttk.Label(meta_frame, text="Cohort:").pack(side="left")
-        self.cohort_var = tk.StringVar(value="seizure")
-        ttk.Combobox(meta_frame, textvariable=self.cohort_var,
-                      values=["seizure", "failed_seizure", "wt"],
-                      state="readonly", width=14).pack(side="left", padx=(2, 10))
-
-        ttk.Label(meta_frame, text="Heating #:").pack(side="left")
-        self.heating_session_var = tk.StringVar(value="1")
-        ttk.Entry(meta_frame, textvariable=self.heating_session_var, width=4).pack(side="left", padx=(2, 10))
-
-        ttk.Label(meta_frame, text="# Seizures:").pack(side="left")
-        self.n_seizures_var = tk.StringVar(value="0")
-        ttk.Entry(meta_frame, textvariable=self.n_seizures_var, width=4).pack(side="left", padx=(2, 10))
-
-        # Row 4: Landmark times (user-entered)
-        lm_frame = ttk.LabelFrame(add_frame, text="Landmark Times (seconds from recording start)", padding=5)
-        lm_frame.pack(fill="x", pady=5)
-
-        self.heating_start_var = tk.StringVar()
-        self.eec_var = tk.StringVar()
-        self.ueo_var = tk.StringVar()
-        self.behav_var = tk.StringVar()
-        self.off_var = tk.StringVar()
-
-        for label, var in [
-            ("Heating start:", self.heating_start_var),
-            ("EEC:", self.eec_var),
-            ("UEO:", self.ueo_var),
-            ("Behavioral onset:", self.behav_var),
-            ("OFF:", self.off_var),
-        ]:
-            ttk.Label(lm_frame, text=label).pack(side="left")
-            ttk.Entry(lm_frame, textvariable=var, width=8).pack(side="left", padx=(2, 10))
-
-        # Add button
-        ttk.Button(add_frame, text="Load & Add Session", command=self._load_session).pack(pady=8)
+        # Channel defaults (editable, applied to all sessions)
+        ch_frame = ttk.Frame(folder_frame)
+        ch_frame.pack(fill="x", pady=2)
+        ttk.Label(ch_frame, text="Channels —").pack(side="left")
+        ttk.Label(ch_frame, text="ECoG:").pack(side="left", padx=(5, 0))
+        self.ecog_ch_var = tk.StringVar(value="2")
+        ttk.Entry(ch_frame, textvariable=self.ecog_ch_var, width=4).pack(side="left", padx=(2, 10))
+        ttk.Label(ch_frame, text="EMG:").pack(side="left")
+        self.emg_ch_var = tk.StringVar(value="3")
+        ttk.Entry(ch_frame, textvariable=self.emg_ch_var, width=4).pack(side="left", padx=(2, 10))
 
         # --- Session list ---
-        list_frame = ttk.LabelFrame(parent, text="Loaded Sessions", padding=10)
+        list_frame = ttk.LabelFrame(parent, text="Sessions (from data log)", padding=10)
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        cols = ("mouse_id", "genotype", "cohort", "n_seizures", "status")
-        self.session_tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=8)
-        for col, w in zip(cols, [100, 80, 120, 80, 120]):
+        cols = ("cohort", "mouse_id", "genotype", "seizure", "sudep",
+                "include", "heat_start", "status")
+        self.session_tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=12)
+        for col, w in zip(cols, [120, 80, 70, 60, 50, 55, 75, 80]):
             self.session_tree.heading(col, text=col.replace("_", " ").title())
             self.session_tree.column(col, width=w, anchor="center")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.session_tree.yview)
@@ -230,9 +193,11 @@ class FiberPhotometryApp:
         self.session_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Buttons below session list
+        # Buttons
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(btn_frame, text="Load All (from raw)", command=self._load_all_sessions).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Load Saved (preprocessed)", command=self._load_saved_sessions).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Remove Selected", command=self._remove_session).pack(side="left", padx=5)
 
         # Output dir
@@ -252,107 +217,25 @@ class FiberPhotometryApp:
         self.loading_log.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
 
+        # Internal: discovered session info (list of dicts with metadata from Excel)
+        self._discovered_sessions: List[Dict] = []
+
     # ==================================================================
     # TAB 2 — Preprocessing
     # ==================================================================
 
     def _setup_preprocessing_tab(self, parent: ttk.Frame) -> None:
-        # --- Photometry strategy + params ---
-        phot_frame = ttk.LabelFrame(parent, text="Photometry Parameters", padding=10)
-        phot_frame.pack(fill="x", padx=5, pady=5)
+        # --- User decisions (per xlsx) ---
+        config_frame = ttk.LabelFrame(parent, text="Preprocessing", padding=10)
+        config_frame.pack(fill="x", padx=5, pady=5)
 
-        row0 = ttk.Frame(phot_frame)
+        row0 = ttk.Frame(config_frame)
         row0.pack(fill="x", pady=2)
-        ttk.Label(row0, text="Strategy:").pack(side="left")
+        ttk.Label(row0, text="Photometry strategy:").pack(side="left")
         self.strategy_var = tk.StringVar(value="A")
         ttk.Combobox(row0, textvariable=self.strategy_var,
                       values=["A", "B", "C"], state="readonly", width=5).pack(side="left", padx=5)
         ttk.Label(row0, text="(A=Chandni, B=Meiling, C=IRLS/Keevers)").pack(side="left")
-
-        # Strategy-specific params
-        param_row = ttk.Frame(phot_frame)
-        param_row.pack(fill="x", pady=2)
-
-        ttk.Label(param_row, text="Gaussian sigma (A):").pack(side="left")
-        self.gaussian_sigma_var = tk.StringVar(value="75")
-        ttk.Entry(param_row, textvariable=self.gaussian_sigma_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(param_row, text="LP cutoff B (Hz):").pack(side="left")
-        self.lp_cutoff_b_var = tk.StringVar(value="10.0")
-        ttk.Entry(param_row, textvariable=self.lp_cutoff_b_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(param_row, text="LP cutoff C (Hz):").pack(side="left")
-        self.lp_cutoff_c_var = tk.StringVar(value="3.0")
-        ttk.Entry(param_row, textvariable=self.lp_cutoff_c_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(param_row, text="IRLS c:").pack(side="left")
-        self.irls_c_var = tk.StringVar(value="1.4")
-        ttk.Entry(param_row, textvariable=self.irls_c_var, width=6).pack(side="left", padx=(2, 10))
-
-        # Post-processing
-        post_row = ttk.Frame(phot_frame)
-        post_row.pack(fill="x", pady=2)
-        ttk.Label(post_row, text="HPF cutoff (Hz):").pack(side="left")
-        self.hpf_cutoff_var = tk.StringVar(value="0.01")
-        ttk.Entry(post_row, textvariable=self.hpf_cutoff_var, width=6).pack(side="left", padx=(2, 10))
-
-        # --- ECoG params ---
-        ecog_frame = ttk.LabelFrame(parent, text="ECoG Filter Parameters", padding=10)
-        ecog_frame.pack(fill="x", padx=5, pady=5)
-
-        ecog_row = ttk.Frame(ecog_frame)
-        ecog_row.pack(fill="x")
-        ttk.Label(ecog_row, text="Bandpass (Hz):").pack(side="left")
-        self.bp_low_var = tk.StringVar(value="1.0")
-        ttk.Entry(ecog_row, textvariable=self.bp_low_var, width=6).pack(side="left", padx=2)
-        ttk.Label(ecog_row, text="–").pack(side="left")
-        self.bp_high_var = tk.StringVar(value="70.0")
-        ttk.Entry(ecog_row, textvariable=self.bp_high_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(ecog_row, text="Notch (Hz):").pack(side="left")
-        self.notch_var = tk.StringVar(value="60.0")
-        ttk.Entry(ecog_row, textvariable=self.notch_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(ecog_row, text="Notch Q:").pack(side="left")
-        self.notch_q_var = tk.StringVar(value="30.0")
-        ttk.Entry(ecog_row, textvariable=self.notch_q_var, width=6).pack(side="left", padx=2)
-
-        # --- Transient detection params ---
-        trans_frame = ttk.LabelFrame(parent, text="Transient Detection Parameters", padding=10)
-        trans_frame.pack(fill="x", padx=5, pady=5)
-
-        trans_row = ttk.Frame(trans_frame)
-        trans_row.pack(fill="x")
-        ttk.Label(trans_row, text="Method:").pack(side="left")
-        self.transient_method_var = tk.StringVar(value="prominence")
-        ttk.Combobox(trans_row, textvariable=self.transient_method_var,
-                      values=["prominence", "mad"], state="readonly", width=10).pack(side="left", padx=(2, 10))
-        ttk.Label(trans_row, text="Min prominence:").pack(side="left")
-        self.min_prominence_var = tk.StringVar(value="1.0")
-        ttk.Entry(trans_row, textvariable=self.min_prominence_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(trans_row, text="Max width (s):").pack(side="left")
-        self.max_width_var = tk.StringVar(value="8.0")
-        ttk.Entry(trans_row, textvariable=self.max_width_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(trans_row, text="MAD k:").pack(side="left")
-        self.mad_k_var = tk.StringVar(value="3.0")
-        ttk.Entry(trans_row, textvariable=self.mad_k_var, width=6).pack(side="left", padx=2)
-
-        # --- Spike detection params ---
-        spike_frame = ttk.LabelFrame(parent, text="Spike Detection Parameters", padding=10)
-        spike_frame.pack(fill="x", padx=5, pady=5)
-
-        spike_row = ttk.Frame(spike_frame)
-        spike_row.pack(fill="x")
-        ttk.Label(spike_row, text="Threshold mul:").pack(side="left")
-        self.tmul_var = tk.StringVar(value="3.0")
-        ttk.Entry(spike_row, textvariable=self.tmul_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(spike_row, text="Abs threshold:").pack(side="left")
-        self.abs_thresh_var = tk.StringVar(value="0.4")
-        ttk.Entry(spike_row, textvariable=self.abs_thresh_var, width=6).pack(side="left", padx=(2, 10))
-        ttk.Label(spike_row, text="Duration (ms):").pack(side="left")
-        self.spk_min_var = tk.StringVar(value="70")
-        ttk.Entry(spike_row, textvariable=self.spk_min_var, width=5).pack(side="left", padx=2)
-        ttk.Label(spike_row, text="–").pack(side="left")
-        self.spk_max_var = tk.StringVar(value="200")
-        ttk.Entry(spike_row, textvariable=self.spk_max_var, width=5).pack(side="left", padx=(2, 10))
 
         # --- Run button + progress ---
         btn_frame = ttk.Frame(parent)
@@ -366,66 +249,71 @@ class FiberPhotometryApp:
 
         # Log
         log_frame = ttk.LabelFrame(parent, text="Preprocessing Log", padding=5)
-        log_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        self.preproc_log = tk.Text(log_frame, height=6, state="disabled", font=("Consolas", 9))
+        log_frame.pack(fill="x", padx=5, pady=5)
+        self.preproc_log = tk.Text(log_frame, height=4, state="disabled", font=("Consolas", 9))
         log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.preproc_log.yview)
         self.preproc_log.configure(yscrollcommand=log_scroll.set)
         self.preproc_log.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
+
+        # --- Interactive seizure marking ---
+        mark_frame = ttk.LabelFrame(parent, text="Seizure Landmark Marking (click on ECoG trace)", padding=5)
+        mark_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Landmark selector
+        mark_ctrl = ttk.Frame(mark_frame)
+        mark_ctrl.pack(fill="x", pady=2)
+        ttk.Label(mark_ctrl, text="Placing:").pack(side="left")
+        self.landmark_placing_var = tk.StringVar(value="EEC")
+        for lm_name in ["EEC", "UEO", "Behavioral onset", "OFF"]:
+            ttk.Radiobutton(mark_ctrl, text=lm_name, variable=self.landmark_placing_var,
+                            value=lm_name).pack(side="left", padx=5)
+
+        # Current landmark values display
+        lm_vals = ttk.Frame(mark_frame)
+        lm_vals.pack(fill="x", pady=2)
+        self.eec_val_var = tk.StringVar(value="EEC: —")
+        self.ueo_val_var = tk.StringVar(value="UEO: —")
+        self.behav_val_var = tk.StringVar(value="Behavioral onset: —")
+        self.off_val_var = tk.StringVar(value="OFF: —")
+        for var in [self.eec_val_var, self.ueo_val_var, self.behav_val_var, self.off_val_var]:
+            ttk.Label(lm_vals, textvariable=var, width=22).pack(side="left", padx=5)
+
+        ttk.Button(mark_ctrl, text="Apply & Next", command=self._apply_and_next).pack(side="right", padx=5)
+        ttk.Button(mark_ctrl, text="Next", command=self._next_session_marking).pack(side="right", padx=2)
+        ttk.Button(mark_ctrl, text="Prev", command=self._prev_session_marking).pack(side="right", padx=2)
+
+        # Matplotlib canvas for ECoG trace
+        self._mark_fig, self._mark_ax = plt.subplots(1, 1, figsize=(10, 2.5))
+        self._mark_ax.set_xlabel("Time (s)")
+        self._mark_ax.set_ylabel("ECoG (filtered)")
+        self._mark_ax.set_title("Select a preprocessed session to mark landmarks")
+        self._mark_canvas = FigureCanvasTkAgg(self._mark_fig, master=mark_frame)
+        self._mark_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._mark_canvas.mpl_connect("button_press_event", self._on_ecog_click)
+
+        # Store landmark lines
+        self._landmark_lines: Dict[str, Optional[plt.Line2D]] = {
+            "EEC": None, "UEO": None, "Behavioral onset": None, "OFF": None,
+        }
+        self._landmark_times: Dict[str, Optional[float]] = {
+            "EEC": None, "UEO": None, "Behavioral onset": None, "OFF": None,
+        }
+        self._marking_session_idx: Optional[int] = None
 
     # ==================================================================
     # TAB 3 — Extraction
     # ==================================================================
 
     def _setup_extraction_tab(self, parent: ttk.Frame) -> None:
-        # --- Pairing mode ---
+        # --- Pairing mode (per xlsx: user decision #2) ---
         pair_frame = ttk.LabelFrame(parent, text="Control Pairing", padding=10)
         pair_frame.pack(fill="x", padx=5, pady=5)
 
-        ttk.Label(pair_frame, text="Pairing mode:").pack(side="left")
+        ttk.Label(pair_frame, text="Define controls by:").pack(side="left")
         self.pairing_mode_var = tk.StringVar(value="temperature")
         ttk.Combobox(pair_frame, textvariable=self.pairing_mode_var,
                       values=["temperature", "time"], state="readonly", width=14).pack(side="left", padx=5)
-
-        # --- Extraction params ---
-        params_frame = ttk.LabelFrame(parent, text="Extraction Parameters", padding=10)
-        params_frame.pack(fill="x", padx=5, pady=5)
-
-        row1 = ttk.Frame(params_frame)
-        row1.pack(fill="x", pady=2)
-        ttk.Label(row1, text="Temp bin (°C):").pack(side="left")
-        self.temp_bin_var = tk.StringVar(value="1.0")
-        ttk.Entry(row1, textvariable=self.temp_bin_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row1, text="Triggered window (s):").pack(side="left")
-        self.trig_window_var = tk.StringVar(value="30.0")
-        ttk.Entry(row1, textvariable=self.trig_window_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row1, text="PSTH bin (s):").pack(side="left")
-        self.psth_bin_var = tk.StringVar(value="10.0")
-        ttk.Entry(row1, textvariable=self.psth_bin_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row1, text="PSTH window (s):").pack(side="left")
-        self.psth_window_var = tk.StringVar(value="60.0")
-        ttk.Entry(row1, textvariable=self.psth_window_var, width=6).pack(side="left", padx=(2, 10))
-
-        row2 = ttk.Frame(params_frame)
-        row2.pack(fill="x", pady=2)
-        ttk.Label(row2, text="Moving avg window (s):").pack(side="left")
-        self.ma_window_var = tk.StringVar(value="30.0")
-        ttk.Entry(row2, textvariable=self.ma_window_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row2, text="Moving avg step (s):").pack(side="left")
-        self.ma_step_var = tk.StringVar(value="5.0")
-        ttk.Entry(row2, textvariable=self.ma_step_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row2, text="Pre-ictal temp range (°C):").pack(side="left")
-        self.preictal_range_var = tk.StringVar(value="10.0")
-        ttk.Entry(row2, textvariable=self.preictal_range_var, width=6).pack(side="left", padx=(2, 10))
-
-        ttk.Label(row2, text="Spike trig window (s):").pack(side="left")
-        self.spike_trig_var = tk.StringVar(value="30.0")
-        ttk.Entry(row2, textvariable=self.spike_trig_var, width=6).pack(side="left", padx=2)
 
         # --- Run button + progress ---
         btn_frame = ttk.Frame(parent)
@@ -450,15 +338,90 @@ class FiberPhotometryApp:
     # Tab 1 actions
     # ------------------------------------------------------------------
 
-    def _browse_ppd(self) -> None:
-        path = filedialog.askopenfilename(title="Select PPD file", filetypes=[("PPD files", "*.ppd")])
+    def _browse_experiment_folder(self) -> None:
+        path = filedialog.askdirectory(title="Select experiment folder")
         if path:
-            self.ppd_path_var.set(path)
+            self.experiment_path_var.set(path)
 
-    def _browse_oep(self) -> None:
-        path = filedialog.askdirectory(title="Select Open Ephys recording folder")
-        if path:
-            self.oep_path_var.set(path)
+    def _scan_experiment_folder(self, experiment_dir: str) -> List[Dict]:
+        return scan_experiment_folder(experiment_dir)
+
+    def _read_data_log(self, experiment_dir: str) -> Optional[dict]:
+        return read_data_log(experiment_dir)
+
+    def _extract_date_from_oep(self, oep_path: str) -> Optional[str]:
+        return extract_date_from_oep(oep_path)
+
+    def _scan_and_populate(self) -> None:
+        """Scan experiment folder, read data log, and populate session treeview."""
+        exp_path = self.experiment_path_var.get().strip()
+        if not exp_path:
+            messagebox.showerror("Error", "Select an experiment folder first.")
+            return
+
+        # Scan folder structure
+        discovered = self._scan_experiment_folder(exp_path)
+        if not discovered:
+            messagebox.showinfo("No sessions", "No sessions found in the selected folder.")
+            return
+
+        # Read data log
+        log_lookup = self._read_data_log(exp_path)
+
+        # Match each discovered session to its log entry
+        for d in discovered:
+            mouse_id = d["session_name"].split("_")[0] if "_" in d["session_name"] else d["session_name"]
+            d["mouse_id"] = mouse_id
+
+            # Extract date from OEP folder
+            date_str = None
+            if d["oep_path"]:
+                date_str = self._extract_date_from_oep(d["oep_path"])
+            d["date"] = date_str
+
+            # Look up metadata from log
+            if log_lookup and (mouse_id, date_str) in log_lookup:
+                d.update(log_lookup[(mouse_id, date_str)])
+            else:
+                # Defaults if not in log
+                cohort = d["cohort"]
+                d["genotype"] = "WT" if "wt" in cohort.lower() else "Scn1a"
+                d["seizure"] = 1 if "seizure" in cohort.lower() and "no" not in cohort.lower() else 0
+                d["sudep"] = False
+                d["include"] = True
+                d["exclusion_reason"] = None
+                d["heating_start"] = None
+
+            # Determine cohort from metadata
+            if d["genotype"] == "WT":
+                d["cohort"] = "wt"
+            elif d["seizure"] > 0:
+                d["cohort"] = "seizure"
+            else:
+                d["cohort"] = "failed_seizure"
+
+        self._discovered_sessions = discovered
+
+        # Clear and populate treeview
+        for item in self.session_tree.get_children():
+            self.session_tree.delete(item)
+        for d in discovered:
+            include_str = "yes" if d["include"] else "no"
+            has_data = "ready" if d["oep_path"] and d["ppd_path"] else "missing"
+            heat = str(int(d["heating_start"])) if d["heating_start"] else "?"
+            self.session_tree.insert(
+                "", "end",
+                values=(d["cohort"], d["mouse_id"], d["genotype"],
+                        d["seizure"], "yes" if d["sudep"] else "",
+                        include_str, heat, has_data),
+            )
+
+        n_excluded = sum(1 for d in discovered if not d["include"])
+        log_status = "with data log" if log_lookup else "no data log found"
+        self._log_loading(
+            f"Scanned: {len(discovered)} sessions ({log_status}), "
+            f"{n_excluded} excluded"
+        )
 
     def _browse_output_dir(self) -> None:
         path = filedialog.askdirectory(title="Select output directory")
@@ -486,83 +449,180 @@ class FiberPhotometryApp:
             return None
         return float(val)
 
-    def _load_session(self) -> None:
-        """Load a single session from PPD + OEP files and add to session list."""
-        ppd_path = self.ppd_path_var.get().strip()
-        oep_path = self.oep_path_var.get().strip()
-        mouse_id = self.mouse_id_var.get().strip()
-
-        if not ppd_path or not oep_path or not mouse_id:
-            messagebox.showerror("Error", "PPD file, OEP folder, and Mouse ID are required.")
+    def _load_all_sessions(self) -> None:
+        """Batch-load all discovered sessions (skipping excluded ones)."""
+        if not self._discovered_sessions:
+            messagebox.showerror("Error", "Scan an experiment folder first.")
+            return
+        if self.running:
+            messagebox.showwarning("Warning", "Already running.")
             return
 
-        heating_start = self._parse_float_or_none(self.heating_start_var)
-        if heating_start is None:
-            messagebox.showerror("Error", "Heating start time is required.")
+        ecog_ch = int(self.ecog_ch_var.get())
+        emg_ch_str = self.emg_ch_var.get().strip()
+        emg_ch = int(emg_ch_str) if emg_ch_str else None
+
+        to_load = [d for d in self._discovered_sessions
+                    if d["include"] and d["oep_path"] and d["ppd_path"]
+                    and d.get("heating_start") is not None]
+
+        if not to_load:
+            messagebox.showerror("Error", "No loadable sessions (check include status and heating start times).")
             return
 
-        self._log_loading(f"Loading {mouse_id}...")
+        self.running = True
+        self._log_loading(f"Loading {len(to_load)} sessions...")
 
         def worker():
-            try:
-                ppd = read_ppd(ppd_path)
-                self._log_loading(f"  PPD loaded: {len(ppd.signal_470)} samples, fs={ppd.fs} Hz")
+            for i, d in enumerate(to_load):
+                mouse_id = d["mouse_id"]
+                try:
+                    self._log_loading(f"[{i+1}/{len(to_load)}] Loading {mouse_id}...")
 
-                oep = read_oep(oep_path)
-                self._log_loading(f"  OEP loaded: {len(oep.ecog)} samples, fs={oep.fs_ecog} Hz")
+                    ppd = read_ppd(d["ppd_path"])
+                    oep = read_oep(
+                        d["oep_path"],
+                        ecog_channel=ecog_ch,
+                        emg_channel=emg_ch,
+                    )
+                    sync = synchronize(ppd, oep)
+                    self._log_loading(
+                        f"  Sync: {sync.n_matched} pulses, "
+                        f"drift={sync.drift_ppm:.1f} ppm"
+                    )
 
-                sync = synchronize(ppd, oep)
-                self._log_loading(
-                    f"  Sync: {sync.n_matched} pulses matched, "
-                    f"drift={sync.drift_ppm:.1f} ppm, residual={sync.residual_ms:.3f} ms"
-                )
+                    landmarks = SessionLandmarks(
+                        heating_start_time=d["heating_start"],
+                    )
 
-                landmarks = SessionLandmarks(
-                    heating_start_time=heating_start,
-                    eec_time=self._parse_float_or_none(self.eec_var),
-                    ueo_time=self._parse_float_or_none(self.ueo_var),
-                    behavioral_onset_time=self._parse_float_or_none(self.behav_var),
-                    off_time=self._parse_float_or_none(self.off_var),
-                )
+                    raw = RawData(
+                        signal_470=sync.signal_470,
+                        signal_405=sync.signal_405,
+                        ecog=sync.ecog,
+                        emg=sync.emg,
+                        temperature_raw=sync.temperature_raw,
+                        temp_bit_volts=sync.temp_bit_volts,
+                        time=sync.time,
+                        fs=sync.fs,
+                    )
 
-                n_seizures = int(self.n_seizures_var.get())
-                cohort = self.cohort_var.get()
+                    session = Session(
+                        mouse_id=mouse_id,
+                        genotype=d["genotype"],
+                        n_seizures=d["seizure"],
+                        sudep=d["sudep"],
+                        include_session=d["include"],
+                        exclusion_reason=d.get("exclusion_reason"),
+                        landmarks=landmarks,
+                        raw=raw,
+                    )
+                    session.cohort = d["cohort"]
+                    session.date = d.get("date")
+                    session.session_name = d.get("session_name")
+                    self.sessions.append(session)
 
-                raw = RawData(
-                    signal_470=sync.signal_470,
-                    signal_405=sync.signal_405,
-                    ecog=sync.ecog,
-                    emg=sync.emg,
-                    temperature_raw=sync.temperature_raw,
-                    temp_bit_volts=sync.temp_bit_volts,
-                    time=sync.time,
-                    fs=sync.fs,
-                )
+                    # Update treeview status
+                    items = self.session_tree.get_children()
+                    full_idx = self._discovered_sessions.index(d)
+                    if full_idx < len(items):
+                        self.root.after(0, lambda idx=full_idx: self._update_session_status(idx, "loaded"))
 
-                session = Session(
-                    mouse_id=mouse_id,
-                    genotype=self.genotype_var.get(),
-                    heating_session=int(self.heating_session_var.get()),
-                    n_seizures=n_seizures,
-                    survived=True,
-                    experiment_label="",
-                    landmarks=landmarks,
-                    raw=raw,
-                )
+                except Exception as e:
+                    self._log_loading(f"  ERROR: {mouse_id}: {e}")
 
-                self.sessions.append(session)
-
-                # Update treeview
-                self.root.after(0, lambda: self.session_tree.insert(
-                    "", "end", values=(mouse_id, self.genotype_var.get(), cohort, n_seizures, "loaded"),
-                ))
-                self._log_loading(f"  {mouse_id} loaded successfully.")
-
-            except Exception as e:
-                self._log_loading(f"  ERROR loading {mouse_id}: {e}")
-                self.root.after(0, lambda err=e: messagebox.showerror("Load Error", str(err)))
+            self._log_loading(f"Done: {len(self.sessions)} sessions loaded.")
+            self.running = False
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _load_saved_sessions(self) -> None:
+        """Load previously preprocessed sessions from .sessions/<strategy>/.
+
+        If multiple strategies are available, prompts the user to choose one.
+        """
+        exp_path = self.experiment_path_var.get().strip()
+        if not exp_path:
+            messagebox.showerror("Error", "Select an experiment folder first.")
+            return
+
+        strategies = find_available_strategies(exp_path)
+        if not strategies:
+            messagebox.showinfo("No saved sessions",
+                                "No preprocessed sessions found. Run 'Load All' and preprocess first.")
+            return
+
+        # Let user choose strategy if multiple are available
+        if len(strategies) == 1:
+            chosen = strategies[0]
+        else:
+            chosen = self._ask_strategy_choice(strategies)
+            if not chosen:
+                return  # user cancelled
+
+        saved = find_saved_sessions(exp_path, strategy=chosen)
+        if not saved:
+            messagebox.showinfo("No saved sessions",
+                                f"No sessions found for strategy {chosen}.")
+            return
+
+        self.sessions.clear()
+        for item in self.session_tree.get_children():
+            self.session_tree.delete(item)
+
+        self._log_loading(f"Loading {len(saved)} sessions (strategy {chosen})...")
+        for path in saved:
+            try:
+                session = load_session(path)
+                self.sessions.append(session)
+                cohort = session.cohort
+                include_str = "yes" if session.include_session else "no"
+                status = "preprocessed" if session.processed else "loaded"
+                self.session_tree.insert(
+                    "", "end",
+                    values=(cohort, session.mouse_id, session.genotype,
+                            session.n_seizures, "yes" if session.sudep else "",
+                            include_str, "", status),
+                )
+            except Exception as e:
+                self._log_loading(f"  ERROR loading {path.name}: {e}")
+
+        self._log_loading(f"Loaded {len(self.sessions)} sessions (strategy {chosen}).")
+        # Set strategy dropdown to match loaded data
+        self.strategy_var.set(chosen)
+        if self.sessions and self.sessions[0].processed:
+            self._show_ecog_for_marking(0)
+
+    def _ask_strategy_choice(self, strategies: List[str]) -> Optional[str]:
+        """Show a simple dialog asking which strategy to load."""
+        labels = {"A": "A (Chandni)", "B": "B (Meiling)", "C": "C (IRLS/Keevers)"}
+        options = [labels.get(s, s) for s in strategies]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Choose preprocessing strategy")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Multiple strategies found. Choose one to load:").pack(padx=15, pady=(15, 5))
+
+        choice_var = tk.StringVar(value=strategies[0])
+        for s, label in zip(strategies, options):
+            ttk.Radiobutton(dialog, text=label, variable=choice_var, value=s).pack(anchor="w", padx=25)
+
+        result = [None]
+
+        def on_ok():
+            result[0] = choice_var.get()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Load", command=on_ok).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side="left", padx=5)
+
+        dialog.wait_window()
+        return result[0]
 
     def _remove_session(self) -> None:
         selected = self.session_tree.selection()
@@ -575,38 +635,141 @@ class FiberPhotometryApp:
                 self.sessions.pop(idx)
 
     # ------------------------------------------------------------------
-    # Tab 2 actions
+    # Tab 2 actions — seizure marking
+    # ------------------------------------------------------------------
+
+    def _show_ecog_for_marking(self, session_idx: int) -> None:
+        """Display preprocessed ECoG trace for landmark marking."""
+        if session_idx >= len(self.sessions):
+            return
+        session = self.sessions[session_idx]
+        if session.processed is None or session.processed.ecog_filtered is None:
+            self._log_preproc("Session not preprocessed yet — run preprocessing first.")
+            return
+
+        self._marking_session_idx = session_idx
+        ecog = session.processed.ecog_filtered
+        fs = session.processed.fs
+        time = np.arange(len(ecog)) / fs
+
+        self._mark_ax.clear()
+        self._mark_ax.plot(time, ecog, color="gray", linewidth=0.5)
+        self._mark_ax.set_xlabel("Time (s)")
+        self._mark_ax.set_ylabel("ECoG (filtered)")
+        self._mark_ax.set_title(f"Session: {session.mouse_id} — click to place landmarks")
+
+        # Reset landmarks
+        for key in self._landmark_lines:
+            self._landmark_lines[key] = None
+            self._landmark_times[key] = None
+
+        # Show existing landmarks if present
+        lm = session.landmarks
+        if lm:
+            for name, t in [("EEC", lm.eec_time), ("UEO", lm.ueo_time),
+                            ("Behavioral onset", lm.behavioral_onset_time), ("OFF", lm.off_time)]:
+                if t is not None:
+                    line = self._mark_ax.axvline(t, color=self._landmark_color(name),
+                                                  linestyle="--", linewidth=1.5, label=name)
+                    self._landmark_lines[name] = line
+                    self._landmark_times[name] = t
+            if any(v is not None for v in self._landmark_lines.values()):
+                self._mark_ax.legend(fontsize=7, loc="upper right")
+
+        self._update_landmark_labels()
+        self._mark_canvas.draw()
+
+    def _landmark_color(self, name: str) -> str:
+        return {"EEC": "orange", "UEO": "red", "Behavioral onset": "purple", "OFF": "blue"}.get(name, "black")
+
+    def _on_ecog_click(self, event) -> None:
+        """Handle click on ECoG trace to place a landmark."""
+        if event.inaxes != self._mark_ax or self._marking_session_idx is None:
+            return
+        t = event.xdata
+        if t is None:
+            return
+
+        name = self.landmark_placing_var.get()
+
+        # Remove old line if exists
+        if self._landmark_lines[name] is not None:
+            self._landmark_lines[name].remove()
+
+        line = self._mark_ax.axvline(t, color=self._landmark_color(name),
+                                      linestyle="--", linewidth=1.5, label=name)
+        self._landmark_lines[name] = line
+        self._landmark_times[name] = t
+
+        self._mark_ax.legend(fontsize=7, loc="upper right")
+        self._mark_canvas.draw()
+        self._update_landmark_labels()
+
+    def _update_landmark_labels(self) -> None:
+        for name, var in [("EEC", self.eec_val_var), ("UEO", self.ueo_val_var),
+                          ("Behavioral onset", self.behav_val_var), ("OFF", self.off_val_var)]:
+            t = self._landmark_times[name]
+            var.set(f"{name}: {t:.2f}s" if t is not None else f"{name}: —")
+
+    def _next_session_marking(self) -> None:
+        """Show next session for landmark marking."""
+        if self._marking_session_idx is None:
+            return
+        next_idx = self._marking_session_idx + 1
+        if next_idx < len(self.sessions):
+            self._show_ecog_for_marking(next_idx)
+
+    def _prev_session_marking(self) -> None:
+        """Show previous session for landmark marking."""
+        if self._marking_session_idx is None:
+            return
+        prev_idx = self._marking_session_idx - 1
+        if prev_idx >= 0:
+            self._show_ecog_for_marking(prev_idx)
+
+    def _apply_and_next(self) -> None:
+        """Apply landmarks to current session and move to next."""
+        self._apply_landmarks()
+        self._next_session_marking()
+
+    def _apply_landmarks(self) -> None:
+        """Write marked landmarks back to the selected session."""
+        if self._marking_session_idx is None or self._marking_session_idx >= len(self.sessions):
+            messagebox.showinfo("Info", "No session selected for marking.")
+            return
+        session = self.sessions[self._marking_session_idx]
+        if session.landmarks is None:
+            return
+        session.landmarks.eec_time = self._landmark_times["EEC"]
+        session.landmarks.ueo_time = self._landmark_times["UEO"]
+        session.landmarks.behavioral_onset_time = self._landmark_times["Behavioral onset"]
+        session.landmarks.off_time = self._landmark_times["OFF"]
+        self._log_preproc(f"Landmarks applied for {session.mouse_id}: "
+                          f"EEC={self._landmark_times['EEC']}, "
+                          f"UEO={self._landmark_times['UEO']}, "
+                          f"OFF={self._landmark_times['OFF']}")
+
+        # Auto-save updated session
+        exp_path = self.experiment_path_var.get().strip()
+        if exp_path:
+            try:
+                strategy = session.preprocessing_config.photometry.strategy
+                save_session(session, get_sessions_dir(exp_path, strategy))
+            except Exception as e:
+                self._log_preproc(f"  WARNING: could not save {session.mouse_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Tab 2 actions — preprocessing
     # ------------------------------------------------------------------
 
     def _read_preprocessing_config(self) -> PreprocessingConfig:
-        """Build a PreprocessingConfig from the GUI fields."""
+        """Build a PreprocessingConfig from the GUI fields.
+
+        Only the strategy is user-selectable (per xlsx). All other
+        parameters use scientifically validated defaults.
+        """
         return PreprocessingConfig(
-            ecog=ECoGConfig(
-                bandpass_low=float(self.bp_low_var.get()),
-                bandpass_high=float(self.bp_high_var.get()),
-                notch_freq=float(self.notch_var.get()),
-                notch_q=float(self.notch_q_var.get()),
-            ),
-            photometry=PhotometryConfig(
-                strategy=self.strategy_var.get(),
-                gaussian_sigma=int(self.gaussian_sigma_var.get()),
-                lowpass_cutoff_b=float(self.lp_cutoff_b_var.get()),
-                lowpass_cutoff_c=float(self.lp_cutoff_c_var.get()),
-                irls_tuning_c=float(self.irls_c_var.get()),
-                hpf_cutoff=float(self.hpf_cutoff_var.get()),
-            ),
-            transient=TransientConfig(
-                method=self.transient_method_var.get(),
-                min_prominence=float(self.min_prominence_var.get()),
-                max_width_s=float(self.max_width_var.get()),
-                mad_k=float(self.mad_k_var.get()),
-            ),
-            spike_detection=SpikeDetectionConfig(
-                tmul=float(self.tmul_var.get()),
-                abs_threshold=float(self.abs_thresh_var.get()),
-                spkdur_min_ms=float(self.spk_min_var.get()),
-                spkdur_max_ms=float(self.spk_max_var.get()),
-            ),
+            photometry=PhotometryConfig(strategy=self.strategy_var.get()),
         )
 
     def _run_preprocessing(self) -> None:
@@ -659,11 +822,20 @@ class FiberPhotometryApp:
                 strategy = strategy_cls()
                 phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, raw.fs, config.photometry)
 
-                # z-score and HPF
+                # Mean stream: z-score relative to baseline
                 phot_result.dff_zscore = z_score_baseline(
                     phot_result.dff, raw.fs, session.landmarks.heating_start_time)
-                phot_result.dff_hpf = highpass_filter(
+
+                # Transient stream: HPF raw dF/F, then z-score
+                dff_hpf_raw = highpass_filter(
                     phot_result.dff, raw.fs, config.photometry.hpf_cutoff, config.photometry.hpf_order)
+                if config.photometry.strategy == "A":
+                    # Chandni uses whole-signal zscore for transient detection
+                    phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
+                else:
+                    # B/C use baseline zscore per spec
+                    phot_result.dff_hpf = z_score_baseline(
+                        dff_hpf_raw, raw.fs, session.landmarks.heating_start_time)
                 self._log_preproc(f"  Photometry: strategy {config.photometry.strategy}")
 
                 # 4. Store processed data
@@ -676,9 +848,10 @@ class FiberPhotometryApp:
                     fs=raw.fs,
                 )
 
-                # 5. Transient detection
+                # 5. Transient detection (detect on zdff_hpf, measure on raw dff)
                 transients = detect_transients(
-                    phot_result.dff_hpf, raw.fs, config.transient,
+                    phot_result.dff_hpf, phot_result.dff, raw.fs,
+                    TRANSIENT_CONFIGS[config.photometry.strategy],
                     temp_result.temperature_smooth)
                 session.transients = transients
                 self._log_preproc(f"  Transients: {len(transients)} detected")
@@ -692,7 +865,7 @@ class FiberPhotometryApp:
                     exclusion_zones=exclusion_zones if exclusion_zones else None)
                 self._log_preproc(f"  Spikes: {len(spikes)} detected")
                 # Store spikes on session (will be used by spike_triggered)
-                session._spikes = spikes
+                session.spikes = spikes
 
                 # 7. Save sanity check plots
                 out = str(self.output_dir / "plots" / "sanity")
@@ -706,17 +879,70 @@ class FiberPhotometryApp:
             self.root.after(0, lambda: self.preproc_progress.configure(value=100))
             self.root.after(0, lambda: self.preproc_progress_label.configure(
                 text=f"Done — {total} sessions preprocessed", foreground="green"))
-            self._log_preproc("Preprocessing complete.")
+
+            self._log_preproc("Preprocessing complete. Use the trace viewer below to mark landmarks.")
+            # Show first session's ECoG for marking
+            if self.sessions:
+                self.root.after(0, lambda: self._show_ecog_for_marking(0))
+
+            # Ask user if they want to save
+            self.root.after(0, lambda: self._prompt_save_preprocessed(config))
             self.running = False
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_save_preprocessed(self, config) -> None:
+        """Ask user whether to save preprocessed data, then save with progress."""
+        exp_path = self.experiment_path_var.get().strip()
+        if not exp_path:
+            return
+
+        strategy = config.photometry.strategy
+        sessions_dir = get_sessions_dir(exp_path, strategy)
+
+        # Check if data already exists for this strategy
+        existing = list(sessions_dir.glob("*.npz")) if sessions_dir.exists() else []
+        if existing:
+            msg = (f"Save preprocessed data (strategy {strategy})?\n\n"
+                   f"{len(existing)} files already exist for strategy {strategy} "
+                   f"and will be overwritten.")
+        else:
+            msg = f"Save preprocessed data (strategy {strategy})?"
+
+        if not messagebox.askyesno("Save preprocessed data", msg):
+            self._log_preproc("Preprocessed data not saved.")
+            return
+
+        # Clear existing files for this strategy before saving
+        for f in existing:
+            f.unlink()
+
+        # Save in background thread with progress
+        def save_worker():
+            total = len(self.sessions)
+            for i, s in enumerate(self.sessions):
+                self.root.after(0, lambda v=int((i / total) * 100): self.preproc_progress.configure(value=v))
+                self.root.after(0, lambda name=s.mouse_id, idx=i, t=total:
+                    self.preproc_progress_label.configure(
+                        text=f"Saving {name} ({idx+1}/{t})..."))
+                try:
+                    save_session(s, sessions_dir)
+                except Exception as e:
+                    self._log_preproc(f"  WARNING: could not save {s.mouse_id}: {e}")
+
+            self.root.after(0, lambda: self.preproc_progress.configure(value=100))
+            self.root.after(0, lambda: self.preproc_progress_label.configure(
+                text=f"Saved {total} sessions (strategy {strategy})", foreground="green"))
+            self._log_preproc(f"Saved {total} sessions to {sessions_dir}")
+
+        threading.Thread(target=save_worker, daemon=True).start()
 
     def _update_session_status(self, idx: int, status: str) -> None:
         items = self.session_tree.get_children()
         if idx < len(items):
             item = items[idx]
             values = list(self.session_tree.item(item, "values"))
-            values[4] = status
+            values[7] = status
             self.session_tree.item(item, values=values)
 
     # ------------------------------------------------------------------
@@ -724,16 +950,8 @@ class FiberPhotometryApp:
     # ------------------------------------------------------------------
 
     def _read_analysis_config(self) -> AnalysisConfig:
-        """Build an AnalysisConfig from the GUI fields."""
+        """Build an AnalysisConfig with defaults per xlsx spec."""
         return AnalysisConfig(
-            temp_bin_size=float(self.temp_bin_var.get()),
-            triggered_window_s=float(self.trig_window_var.get()),
-            psth_bin_size_s=float(self.psth_bin_var.get()),
-            psth_window_s=float(self.psth_window_var.get()),
-            moving_avg_window_s=float(self.ma_window_var.get()),
-            moving_avg_step_s=float(self.ma_step_var.get()),
-            preictal_temp_range=float(self.preictal_range_var.get()),
-            spike_triggered_window_s=float(self.spike_trig_var.get()),
         )
 
     def _run_extraction(self) -> None:
@@ -772,9 +990,17 @@ class FiberPhotometryApp:
             seizure_sessions = [s for s in self.sessions if s.n_seizures > 0]
             control_sessions = [s for s in self.sessions if s.n_seizures == 0]
             if seizure_sessions and control_sessions:
-                assign_all_controls(seizure_sessions, control_sessions, mode=mode)
-                self._log_extract(f"  Pairing ({mode}): {len(seizure_sessions)} seizure, "
-                                  f"{len(control_sessions)} control sessions")
+                try:
+                    assign_all_controls(seizure_sessions, control_sessions, mode=mode)
+                    self._log_extract(f"  Pairing ({mode}): {len(seizure_sessions)} seizure, "
+                                      f"{len(control_sessions)} control sessions")
+                except Exception as e:
+                    self._log_extract(f"  Pairing FAILED — aborting extraction: {e}")
+                    logger.exception("Pairing failed")
+                    self.root.after(0, lambda: self.extract_progress_label.configure(
+                        text="Extraction failed (pairing error)", foreground="red"))
+                    self.running = False
+                    return
             else:
                 self._log_extract("  Pairing skipped (need both seizure and control sessions)")
 
@@ -823,6 +1049,7 @@ class FiberPhotometryApp:
                 plot_spike_triggered,
             ]
 
+            failed_modules = []
             for name, compute_fn, plot_fn in zip(module_names, compute_fns, plot_fns):
                 progress(f"Running {name}...")
                 try:
@@ -832,9 +1059,8 @@ class FiberPhotometryApp:
                         if name == "Spike-triggered averages":
                             spike_times_list = []
                             for s in sessions:
-                                spikes = getattr(s, "_spikes", [])
                                 spike_times_list.append(
-                                    np.array([sp.time for sp in spikes]) if spikes else np.array([]))
+                                    np.array([sp.time for sp in s.spikes]) if s.spikes else np.array([]))
                             results[cohort_name] = compute_spike_triggered_average(
                                 sessions, spike_times_list, config)
                         else:
@@ -845,17 +1071,24 @@ class FiberPhotometryApp:
                     self._log_extract(f"  {name}: saved {fig_path}")
 
                 except Exception as e:
+                    failed_modules.append(name)
                     self._log_extract(f"  {name}: ERROR — {e}")
-                    logger.exception(f"Error in {name}")
+                    logger.exception("Error in %s", name)
 
             # Update session statuses
             for i in range(len(self.sessions)):
                 self.root.after(0, lambda idx=i: self._update_session_status(idx, "extracted"))
 
             self.root.after(0, lambda: self.extract_progress.configure(value=100))
-            self.root.after(0, lambda: self.extract_progress_label.configure(
-                text="Extraction complete", foreground="green"))
-            self._log_extract("All extraction modules complete.")
+            if failed_modules:
+                summary = f"Extraction done with {len(failed_modules)} error(s): {', '.join(failed_modules)}"
+                self.root.after(0, lambda: self.extract_progress_label.configure(
+                    text=summary, foreground="orange"))
+                self._log_extract(summary)
+            else:
+                self.root.after(0, lambda: self.extract_progress_label.configure(
+                    text="Extraction complete", foreground="green"))
+                self._log_extract("All extraction modules complete.")
             self.running = False
 
         threading.Thread(target=worker, daemon=True).start()

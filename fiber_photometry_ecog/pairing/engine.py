@@ -16,6 +16,12 @@ import numpy as np
 from ..core.data_models import Session
 
 
+def _temp_at_time(temp: np.ndarray, fs: float, t: float) -> float:
+    """Look up temperature value at a given time."""
+    idx = min(int(round(t * fs)), len(temp) - 1)
+    return float(temp[idx])
+
+
 @dataclass
 class SeizureGroupMeans:
     """Mean landmark values computed across all seizure sessions."""
@@ -209,6 +215,17 @@ def assign_equivalents_temperature(
     lm.equiv_behavioral_onset_time = beh_time
     lm.equiv_off_time = off_time
 
+    # Fill in temperatures at equivalent times
+    temp = control_session.processed.temperature_smooth
+    fs = control_session.processed.fs
+    if temp is not None and fs is not None:
+        if eec_time is not None:
+            lm.equiv_eec_temp = _temp_at_time(temp, fs, eec_time)
+        if ueo_time is not None:
+            lm.equiv_ueo_temp = _temp_at_time(temp, fs, ueo_time)
+        if beh_time is not None:
+            lm.equiv_behavioral_onset_temp = _temp_at_time(temp, fs, beh_time)
+
 
 def assign_equivalents_time(
     control_session: Session,
@@ -244,6 +261,15 @@ def assign_equivalents_time(
         lm.equiv_behavioral_onset_time = heat_start + group_means.mean_behavioral_onset_time
     else:
         lm.equiv_behavioral_onset_time = None
+
+    # Fill in temperatures at equivalent times
+    temp = control_session.processed.temperature_smooth
+    fs = control_session.processed.fs
+    if temp is not None and fs is not None:
+        lm.equiv_eec_temp = _temp_at_time(temp, fs, lm.equiv_eec_time)
+        lm.equiv_ueo_temp = _temp_at_time(temp, fs, lm.equiv_ueo_time)
+        if lm.equiv_behavioral_onset_time is not None:
+            lm.equiv_behavioral_onset_temp = _temp_at_time(temp, fs, lm.equiv_behavioral_onset_time)
 
 
 def assign_all_controls(

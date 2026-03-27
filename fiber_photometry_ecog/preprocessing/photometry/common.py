@@ -1,7 +1,7 @@
 """
 Shared photometry utilities used across strategies.
 
-- Biexponential fitting (photobleaching correction for strategies B and C)
+- Biexponential fitting (photobleaching correction for strategy B)
 - z-scoring relative to baseline
 - High-pass filter for transient detection stream
 """
@@ -92,7 +92,7 @@ def fit_biexponential(
 
 
 # ---------------------------------------------------------------------------
-# Shared low-pass + biexp detrend (used by strategies B and C)
+# Shared low-pass + biexp detrend (used by strategy B)
 # ---------------------------------------------------------------------------
 
 def lowpass_and_detrend(
@@ -145,7 +145,7 @@ def z_score_baseline(
 
     Returns
     -------
-    z-scored signal. Returns zeros with a warning if baseline std is zero.
+    z-scored signal.
     """
     baseline_end_idx = int(baseline_end_s * fs)
     baseline_end_idx = min(baseline_end_idx, len(signal))

@@ -566,7 +566,7 @@ class TestTransientDetection:
             idx = np.arange(n)
             dff += 2.0 * np.exp(-0.5 * ((idx - center) / sigma) ** 2)
 
-        events = detect_transients(dff, fs)
+        events = detect_transients(dff, dff, fs)
         assert len(events) >= 4
 
         detected_times = [e.peak_time for e in events]
@@ -580,7 +580,7 @@ class TestTransientDetection:
         fs = 130.0
         n = int(fs * 60)
         dff = 0.01 * np.random.randn(n)
-        events = detect_transients(dff, fs)
+        events = detect_transients(dff, dff, fs)
         assert len(events) <= 1
 
     def test_transient_properties(self):
@@ -593,7 +593,7 @@ class TestTransientDetection:
         center = 30.0 * fs
         dff = 3.0 * np.exp(-0.5 * ((idx - center) / sigma) ** 2)
 
-        events = detect_transients(dff, fs)
+        events = detect_transients(dff, dff, fs)
         assert len(events) >= 1
         event = events[0]
         assert abs(event.peak_time - 30.0) < 1.0
@@ -612,7 +612,7 @@ class TestTransientDetection:
         dff += 5.0 * np.exp(-0.5 * ((idx - 30.0 * fs) / sigma) ** 2)
 
         config = TransientConfig(method="mad", mad_k=3.0)
-        events = detect_transients(dff, fs, config)
+        events = detect_transients(dff, dff, fs, config)
         assert len(events) >= 1
 
     def test_max_width_respected(self):
@@ -624,7 +624,7 @@ class TestTransientDetection:
         dff = 3.0 * np.exp(-0.5 * ((idx - 60.0 * fs) / sigma) ** 2)
 
         config = TransientConfig(max_width_s=8.0)
-        events = detect_transients(dff, fs, config)
+        events = detect_transients(dff, dff, fs, config)
         assert len(events) == 0
 
     def test_temperature_crossref(self):
@@ -637,7 +637,7 @@ class TestTransientDetection:
         dff += 3.0 * np.exp(-0.5 * ((idx - 30.0 * fs) / sigma) ** 2)
 
         temperature = np.linspace(30.0, 40.0, n)
-        events = detect_transients(dff, fs, temperature=temperature)
+        events = detect_transients(dff, dff, fs, temperature=temperature)
         assert len(events) >= 1
         assert events[0].temperature_at_peak is not None
         assert 33.0 < events[0].temperature_at_peak < 37.0
@@ -645,7 +645,7 @@ class TestTransientDetection:
     def test_invalid_method_raises(self):
         config = TransientConfig(method="invalid")
         with pytest.raises(ValueError, match="Unknown"):
-            detect_transients(np.zeros(100), 130.0, config)
+            detect_transients(np.zeros(100), np.zeros(100), 130.0, config)
 
 
 # ---------------------------------------------------------------------------

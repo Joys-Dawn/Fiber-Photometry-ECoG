@@ -49,13 +49,14 @@ def _detect_rising_edges_oep(oep: OEPData) -> np.ndarray:
     """Return rising-edge times (seconds) from OEP TTL events.
 
     OEP TTL states: +1 = rising edge, -1 = falling edge.
-    Uses timestamps directly from the event files.
+    Uses sample_numbers / fs for reliable timing (OEP timestamps can be
+    unreliable absolute values from the recording system's internal clock).
     """
     if len(oep.ttl_states) == 0:
         return np.array([])
 
     rising_mask = oep.ttl_states > 0
-    return oep.ttl_timestamps[rising_mask]
+    return oep.ttl_sample_numbers[rising_mask].astype(np.float64) / oep.fs
 
 
 def _match_pulses(
@@ -165,7 +166,8 @@ def synchronize(
     t_photo_aligned = scaling * t_photo_adj + offset
 
     # --- Step 6: Determine overlapping time region ---
-    t_eeg = np.arange(len(oep.ecog)) / oep.fs
+    # Use sample_numbers for absolute time (not 0-indexed) to match TTL timebase
+    t_eeg = oep.sample_numbers.astype(np.float64) / oep.fs
     t_min = max(t_photo_aligned[0], t_eeg[0])
     t_max = min(t_photo_aligned[-1], t_eeg[-1])
 
@@ -173,7 +175,12 @@ def synchronize(
     t_eeg_common = t_eeg[eeg_mask]
     ecog_common = oep.ecog[eeg_mask]
     emg_common = oep.emg[eeg_mask] if oep.emg is not None else None
-    temp_common = oep.temperature_raw[eeg_mask]
+    # Temperature may come from a different stream with slightly different length
+    n_eeg = len(oep.ecog)
+    temp = oep.temperature_raw[:n_eeg] if len(oep.temperature_raw) >= n_eeg else np.pad(
+        oep.temperature_raw, (0, n_eeg - len(oep.temperature_raw)), mode="edge"
+    )
+    temp_common = temp[eeg_mask]
 
     # --- Step 7: PCHIP interpolate photometry onto ECoG timebase ---
     signal_470_interp = PchipInterpolator(t_photo_aligned, ppd.signal_470)(t_eeg_common)

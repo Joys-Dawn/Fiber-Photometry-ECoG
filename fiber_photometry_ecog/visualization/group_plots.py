@@ -443,31 +443,53 @@ def plot_spike_triggered(
     output_dir: str,
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     csv_rows = []
 
-    # Triggered average trace
-    ax = axes[0]
+    # Top-left: Photometry STA (mean +/- 95% CI)
+    ax = axes[0, 0]
     for name, r in results.items():
-        _line_sem(ax, r.time_axis, r.group_mean, r.group_sem, _color(name), name)
+        c = _color(name)
+        ci95 = 1.96 * r.group_sem
+        ax.plot(r.time_axis, r.group_mean, color=c, label=name)
+        ax.fill_between(r.time_axis, r.group_mean - ci95, r.group_mean + ci95,
+                        color=c, alpha=0.25)
         for s in r.session_results:
             csv_rows.append([name, s.mouse_id, s.n_spikes, s.auc])
     ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("Time rel. to spike (s)")
     ax.set_ylabel("z-ΔF/F")
-    ax.set_title("Spike-Triggered Average")
+    ax.set_title("Photometry STA (mean +/- 95% CI)")
     ax.legend(fontsize=7)
     ax.spines[["right", "top"]].set_visible(False)
 
-    # AUC bar plot
+    # Top-right: EEG STA (mean +/- 95% CI)
+    ax = axes[0, 1]
+    for name, r in results.items():
+        c = _color(name)
+        ci95 = 1.96 * r.eeg_group_sem
+        ax.plot(r.time_axis, r.eeg_group_mean, color=c, label=name)
+        ax.fill_between(r.time_axis, r.eeg_group_mean - ci95,
+                        r.eeg_group_mean + ci95, color=c, alpha=0.25)
+    ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("Time rel. to spike (s)")
+    ax.set_ylabel("ECoG (polarity-aligned)")
+    ax.set_title("EEG STA (mean +/- 95% CI)")
+    ax.legend(fontsize=7)
+    ax.spines[["right", "top"]].set_visible(False)
+
+    # Bottom-left: Photometry AUC bar plot
     auc_data = {}
     for name, r in results.items():
         auc_vals = [s.auc for s in r.session_results]
         auc_sem = np.std(auc_vals) / np.sqrt(len(auc_vals)) if len(auc_vals) > 1 else 0.0
         auc_data[name] = (auc_vals, r.group_auc, auc_sem)
-    _bar_scatter(axes[1], auc_data, "AUC")
-    axes[1].set_title("Spike-Triggered AUC")
+    _bar_scatter(axes[1, 0], auc_data, "AUC")
+    axes[1, 0].set_title("Spike-Triggered AUC")
+
+    # Bottom-right: empty (reserved)
+    axes[1, 1].axis("off")
 
     fig.tight_layout()
     path = os.path.join(output_dir, "spike_triggered.png")
