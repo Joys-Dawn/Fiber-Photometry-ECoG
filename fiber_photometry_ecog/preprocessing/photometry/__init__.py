@@ -19,6 +19,7 @@ from .strategy_c_irls import (
 from .common import (
     z_score_baseline as z_score_baseline,
     highpass_filter as highpass_filter,
+    detrend_moving_average as detrend_moving_average,
 )
 
 

@@ -21,6 +21,7 @@ from fiber_photometry_ecog.preprocessing.photometry.common import (
     fit_biexponential,
     z_score_baseline,
     highpass_filter,
+    detrend_moving_average,
 )
 from fiber_photometry_ecog.preprocessing.photometry.strategy_a_chandni import (
     ChandniStrategy,
@@ -288,6 +289,27 @@ class TestHighpassFilter:
         n_trim = int(fs * 2)
         ratio = (
             np.std(filtered[n_trim:-n_trim])
+            / np.std(signal[n_trim:-n_trim])
+        )
+        assert 0.8 < ratio < 1.2
+
+
+class TestDetrendMovingAverage:
+    def test_removes_dc(self):
+        """Moving-average subtraction should remove DC component."""
+        fs = 130.0
+        signal = np.ones(int(fs * 60)) * 10.0
+        detrended = detrend_moving_average(signal, fs, window_s=100.0)
+        assert abs(np.mean(detrended)) < 0.5
+
+    def test_preserves_fast_signal(self):
+        """Signals much faster than window should pass through."""
+        fs = 130.0
+        signal = make_sine(1.0, fs, 60.0, 5.0)
+        detrended = detrend_moving_average(signal, fs, window_s=100.0)
+        n_trim = int(fs * 2)
+        ratio = (
+            np.std(detrended[n_trim:-n_trim])
             / np.std(signal[n_trim:-n_trim])
         )
         assert 0.8 < ratio < 1.2
@@ -600,20 +622,6 @@ class TestTransientDetection:
         assert abs(event.peak_amplitude - 3.0) < 0.5
         assert event.half_width > 0
         assert event.peak_to_trough > 0
-
-    def test_mad_method(self):
-        """MAD method should also detect prominent transients."""
-        np.random.seed(42)
-        fs = 130.0
-        n = int(fs * 60)
-        idx = np.arange(n)
-        dff = 0.01 * np.random.randn(n)
-        sigma = 0.5 * fs / 2.355
-        dff += 5.0 * np.exp(-0.5 * ((idx - 30.0 * fs) / sigma) ** 2)
-
-        config = TransientConfig(method="mad", mad_k=3.0)
-        events = detect_transients(dff, dff, fs, config)
-        assert len(events) >= 1
 
     def test_max_width_respected(self):
         """Very wide peaks should be excluded by max_width_s."""

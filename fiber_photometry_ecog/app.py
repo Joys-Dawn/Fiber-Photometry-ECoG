@@ -47,6 +47,7 @@ from .preprocessing.photometry import (
     IRLSStrategy,
     z_score_baseline,
     highpass_filter,
+    detrend_moving_average,
 )
 from .pairing.engine import assign_all_controls
 from .analysis import (
@@ -820,22 +821,28 @@ class FiberPhotometryApp:
                 # 3. Photometry
                 strategy_cls = STRATEGY_MAP[config.photometry.strategy]
                 strategy = strategy_cls()
-                phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, raw.fs, config.photometry)
+                try:
+                    phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, raw.fs, config.photometry)
+                except ValueError as exc:
+                    self._log_preproc(f"  SKIPPED: {exc}")
+                    self.root.after(0, lambda idx=i: self._update_session_status(idx, "skipped"))
+                    continue
 
                 # Mean stream: z-score relative to baseline
                 phot_result.dff_zscore = z_score_baseline(
                     phot_result.dff, raw.fs, session.landmarks.heating_start_time)
 
-                # Transient stream: HPF raw dF/F, then z-score
-                dff_hpf_raw = highpass_filter(
-                    phot_result.dff, raw.fs, config.photometry.hpf_cutoff, config.photometry.hpf_order)
+                # Transient stream: detrend, then z-score
                 if config.photometry.strategy == "A":
-                    # Chandni uses whole-signal zscore for transient detection
+                    # Strategy A: HPF then whole-signal z-score (per Chandni's detect_transients.m)
+                    dff_hpf_raw = highpass_filter(phot_result.dff, raw.fs)
                     phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
                 else:
-                    # B/C use baseline zscore per spec
-                    phot_result.dff_hpf = z_score_baseline(
-                        dff_hpf_raw, raw.fs, session.landmarks.heating_start_time)
+                    # Strategy B/C: Wallace 2025 moving-avg detrend, then whole-session z-score
+                    # Per Wallace: "This signal was then z-scored" (no baseline period specified)
+                    dff_detrended = detrend_moving_average(
+                        phot_result.dff, raw.fs, config.photometry.detrend_window_s)
+                    phot_result.dff_hpf = (dff_detrended - np.mean(dff_detrended)) / np.std(dff_detrended)
                 self._log_preproc(f"  Photometry: strategy {config.photometry.strategy}")
 
                 # 4. Store processed data

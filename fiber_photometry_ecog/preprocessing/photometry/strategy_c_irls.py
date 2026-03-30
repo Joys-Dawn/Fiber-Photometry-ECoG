@@ -167,6 +167,17 @@ class IRLSStrategy:
         )
         fitted_iso = slope * filt_405 + intercept
 
+        # Guard: if fitted_iso crosses zero the dF/F division explodes.
+        # This happens when the 470/405 dynamic ranges diverge so much
+        # that the linear fit has a large negative intercept.
+        # TODO: fall back to Strategy B for these sessions instead of raising
+        if np.any(fitted_iso <= 0):
+            raise ValueError(
+                "IRLS fitted isosbestic crosses zero — dF/F is undefined. "
+                f"slope={slope:.4f}, intercept={intercept:.4f}, "
+                f"min(fitted_iso)={fitted_iso.min():.6f}"
+            )
+
         # --- Step 3: dF/F = (filtered_signal - fitted_iso) / fitted_iso ---
         dff = (filt_470 - fitted_iso) / fitted_iso
 

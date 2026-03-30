@@ -41,8 +41,11 @@ class PhotometryConfig:
 
     # Post-processing
     baseline_end_s: Optional[float] = None  # seconds; if None, must be set per session (heating start)
-    hpf_cutoff: float = 0.01       # Hz, for transient detection stream
+    # Strategy A detrending: HPF (per Chandni's detect_transients.m)
+    hpf_cutoff: float = 0.01       # Hz, Butterworth HPF for Strategy A
     hpf_order: int = 2             # Butterworth order
+    # Strategy B/C detrending: moving-average subtraction (per Wallace 2025)
+    detrend_window_s: float = 100.0  # seconds; moving-average window
 
 
 @dataclass
@@ -60,21 +63,28 @@ class SpikeDetectionConfig:
 
 @dataclass
 class TransientConfig:
-    """Transient detection parameters."""
-    method: str = "prominence"       # "prominence" or "mad"
-    min_prominence: float = 1.0      # z-score units
-    max_width_s: float = 8.0         # seconds
+    """Transient detection parameters.
+
+    method="prominence": scipy find_peaks with prominence (Chandni's original).
+    method="wallace": two-step — height gate then prominence filter
+        (Wallace 2025 ProM: findpeaks height>=1.0, then prominence>=2).
+    """
+    method: str = "prominence"       # "prominence" or "wallace"
+    min_prominence: Optional[float] = 1.0   # prominence in z-score units (None to disable)
+    min_height: Optional[float] = None      # height in z-score units (None to disable)
+    max_width_s: float = 8.0         # seconds (prominence method only, per Chandni)
     trough_window_s: float = 2.5     # seconds each side of peak
-    mad_k: float = 3.0               # for MAD method: median + k * MAD
 
 
-# Strategy-specific defaults. A uses whole-signal z-score (STD=1, so 1.0 is
-# appropriate). B/C use baseline z-score (tiny denominator inflates values,
-# so 2.6 SD per Donka et al. 2025 PASTa toolbox).
+# Strategy-specific defaults.
+# A: Chandni's original — prominence=1.0 on z-scored HPF signal (per detect_transients.m)
+# B/C: Wallace 2025 ProM — height>=1.0 on z-scored, then prominence on raw dF/F.
+#   Wallace used prominence=2.0 but on %dF/F in percentage scale (dLight sensor).
+#   Our dF/F is fractional (0.08 = 8%), so 0.02 = 2 percentage points equivalent.
 TRANSIENT_CONFIGS = {
     "A": TransientConfig(min_prominence=1.0),
-    "B": TransientConfig(min_prominence=2.6),
-    "C": TransientConfig(min_prominence=2.6),
+    "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.03),
+    "C": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
 }
 
 

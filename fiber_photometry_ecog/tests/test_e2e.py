@@ -30,6 +30,7 @@ from fiber_photometry_ecog.preprocessing.photometry import (
     IRLSStrategy,
     z_score_baseline,
     highpass_filter,
+    detrend_moving_average,
 )
 from fiber_photometry_ecog.core.config import (
     PreprocessingConfig,
@@ -194,14 +195,15 @@ def preprocess(session: Session, strategy_name: str, config: PreprocessingConfig
         phot_result.dff, fs, session.landmarks.heating_start_time,
     )
 
-    # Transient stream: HPF raw dF/F, then z-score
-    dff_hpf_raw = highpass_filter(phot_result.dff, fs, config.photometry.hpf_cutoff)
+    # Transient stream: detrend, then z-score
     if strategy_name == "A":
-        # Chandni uses whole-signal zscore
+        # Strategy A: HPF then whole-signal z-score (per Chandni's detect_transients.m)
+        dff_hpf_raw = highpass_filter(phot_result.dff, fs)
         phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
     else:
-        phot_result.dff_hpf = z_score_baseline(
-            dff_hpf_raw, fs, session.landmarks.heating_start_time)
+        # Strategy B/C: Wallace 2025 moving-avg detrend, then whole-session z-score
+        dff_detrended = detrend_moving_average(phot_result.dff, fs, config.photometry.detrend_window_s)
+        phot_result.dff_hpf = (dff_detrended - np.mean(dff_detrended)) / np.std(dff_detrended)
 
     # Transients (detect on zdff_hpf, measure on raw dff)
     transients = detect_transients(

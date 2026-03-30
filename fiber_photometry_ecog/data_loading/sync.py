@@ -16,8 +16,13 @@ linear model, which corrects for clock drift (not just a fixed offset).
 from dataclasses import dataclass
 from typing import Optional
 
+import logging
+
 import numpy as np
 from scipy.interpolate import PchipInterpolator
+from scipy.signal import decimate
+
+logger = logging.getLogger(__name__)
 
 from .ppd_reader import PPDData
 from .oep_reader import OEPData
@@ -182,7 +187,29 @@ def synchronize(
     )
     temp_common = temp[eeg_mask]
 
-    # --- Step 7: PCHIP interpolate photometry onto ECoG timebase ---
+    # --- Step 7: Decimate ECoG to 1000 Hz if recorded at higher rate ---
+    TARGET_FS = 1000.0
+    output_fs = oep.fs
+
+    if oep.fs > TARGET_FS:
+        factor = int(oep.fs / TARGET_FS)
+        if oep.fs != factor * TARGET_FS:
+            raise ValueError(
+                f"ECoG fs={oep.fs} is not an integer multiple of {TARGET_FS}. "
+                f"Cannot decimate cleanly."
+            )
+        logger.info(
+            "ECoG fs=%.0f > %.0f; decimating by %dx",
+            oep.fs, TARGET_FS, factor,
+        )
+        ecog_common = decimate(ecog_common, factor)
+        if emg_common is not None:
+            emg_common = decimate(emg_common, factor)
+        temp_common = decimate(temp_common, factor)
+        t_eeg_common = t_eeg_common[::factor]  # subsample timestamps to match
+        output_fs = TARGET_FS
+
+    # --- Step 8: PCHIP interpolate photometry onto ECoG timebase ---
     signal_470_interp = PchipInterpolator(t_photo_aligned, ppd.signal_470)(t_eeg_common)
     signal_405_interp = PchipInterpolator(t_photo_aligned, ppd.signal_405)(t_eeg_common)
 
@@ -197,7 +224,7 @@ def synchronize(
         temperature_raw=temp_common,
         temp_bit_volts=oep.temp_bit_volts,
         time=time_common,
-        fs=oep.fs,
+        fs=output_fs,
         n_matched=len(matched_photo),
         drift_ppm=drift_ppm,
         scaling=scaling,

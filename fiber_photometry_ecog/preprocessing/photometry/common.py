@@ -158,7 +158,7 @@ def z_score_baseline(
 
 
 # ---------------------------------------------------------------------------
-# High-pass filter for transient detection
+# High-pass filter for transient detection (Strategy A, per Chandni's code)
 # ---------------------------------------------------------------------------
 
 def highpass_filter(
@@ -168,6 +168,9 @@ def highpass_filter(
     order: int = 2,
 ) -> np.ndarray:
     """Zero-phase Butterworth high-pass filter.
+
+    Used by Strategy A (Chandni's original pipeline). Chandni's
+    detect_transients.m operates on zdff_hpf (z-scored HPF dF/F).
 
     Parameters
     ----------
@@ -182,3 +185,44 @@ def highpass_filter(
     """
     sos = butter(order, cutoff, btype="highpass", fs=fs, output="sos")
     return sosfiltfilt(sos, signal)
+
+
+# ---------------------------------------------------------------------------
+# Detrending for transient detection (Strategy B/C, Wallace 2025 moving-average)
+# ---------------------------------------------------------------------------
+
+def detrend_moving_average(
+    signal: np.ndarray,
+    fs: float,
+    window_s: float = 100.0,
+) -> np.ndarray:
+    """Detrend by subtracting a moving average, per Wallace et al. 2025.
+
+    Wallace 2025: "adjusted for bleaching, drift, and motion artifacts
+    through normalization by detrending the 465-nm-excited signal and
+    subtracting a moving average smoothed (width=100 s) version of the
+    signal."
+
+    Parameters
+    ----------
+    signal : 1-D signal (dF/F)
+    fs : sampling rate (Hz)
+    window_s : moving average window in seconds (default 100s per Wallace)
+
+    Returns
+    -------
+    Detrended signal (signal - moving_average).
+    """
+    window_samples = int(window_s * fs)
+    if window_samples < 1:
+        window_samples = 1
+    # Ensure odd window for symmetric averaging
+    if window_samples % 2 == 0:
+        window_samples += 1
+    # Uniform 1-D filter (moving average) preserving array length
+    kernel = np.ones(window_samples) / window_samples
+    # Pad edges to avoid boundary artifacts
+    pad = window_samples // 2
+    padded = np.pad(signal, pad, mode="edge")
+    moving_avg = np.convolve(padded, kernel, mode="valid")
+    return signal - moving_avg
