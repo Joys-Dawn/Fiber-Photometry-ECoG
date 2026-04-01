@@ -83,7 +83,7 @@ class TransientConfig:
 #   Our dF/F is fractional (0.08 = 8%), so 0.02 = 2 percentage points equivalent.
 TRANSIENT_CONFIGS = {
     "A": TransientConfig(min_prominence=1.0),
-    "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.03),
+    "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.035),
     "C": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
 }
 

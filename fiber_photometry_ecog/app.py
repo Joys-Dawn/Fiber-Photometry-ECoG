@@ -838,11 +838,12 @@ class FiberPhotometryApp:
                     dff_hpf_raw = highpass_filter(phot_result.dff, raw.fs)
                     phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
                 else:
-                    # Strategy B/C: Wallace 2025 moving-avg detrend, then whole-session z-score
-                    # Per Wallace: "This signal was then z-scored" (no baseline period specified)
+                    # Strategy B/C: Wallace 2025 moving-avg detrend, then baseline z-score
+                    # Baseline z-score avoids inflating std during heating (PASTa/Donka 2025)
                     dff_detrended = detrend_moving_average(
                         phot_result.dff, raw.fs, config.photometry.detrend_window_s)
-                    phot_result.dff_hpf = (dff_detrended - np.mean(dff_detrended)) / np.std(dff_detrended)
+                    phot_result.dff_hpf = z_score_baseline(
+                        dff_detrended, raw.fs, session.landmarks.heating_start_time)
                 self._log_preproc(f"  Photometry: strategy {config.photometry.strategy}")
 
                 # 4. Store processed data
