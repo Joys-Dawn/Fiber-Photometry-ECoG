@@ -28,6 +28,7 @@ from ._helpers import (
 @dataclass
 class PreictalMeanSessionResult:
     mouse_id: str
+    heating_session: int
     baseline_mean: float
     early_heat_mean: float
     late_heat_mean: float
@@ -109,6 +110,7 @@ def compute_preictal_mean(
 
         session_results.append(PreictalMeanSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             baseline_mean=bl_mean,
             early_heat_mean=eh_mean,
             late_heat_mean=lh_mean,

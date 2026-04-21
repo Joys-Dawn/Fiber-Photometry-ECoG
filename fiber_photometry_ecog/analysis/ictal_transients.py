@@ -22,6 +22,7 @@ from ._helpers import (
 @dataclass
 class IctalTransientSessionResult:
     mouse_id: str
+    heating_session: int
     psth_counts: np.ndarray         # transient count per bin
     psth_bin_centers: np.ndarray    # seconds relative to UEO
 
@@ -30,7 +31,7 @@ class IctalTransientSessionResult:
 class IctalTransientGroupResult:
     session_results: List[IctalTransientSessionResult]
     psth_bin_centers: np.ndarray
-    psth_mean: np.ndarray           # mean counts across sessions
+    psth_mean: np.ndarray           # mean frequency (Hz) across sessions
     psth_sem: np.ndarray
     # Moving average around UEO
     moving_avg_times: np.ndarray    # seconds relative to UEO
@@ -81,6 +82,7 @@ def compute_ictal_transients(
 
         session_results.append(IctalTransientSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             psth_counts=counts,
             psth_bin_centers=bin_centers.copy(),
         ))
@@ -106,10 +108,11 @@ def compute_ictal_transients(
         all_amp_ma.append(amps)
         all_hw_ma.append(hws)
 
-    # Group PSTH
+    # Group PSTH — spec calls for frequency (Hz), so divide counts by bin width
     count_mat = np.array(all_counts)
-    psth_mean = np.mean(count_mat, axis=0)
-    psth_sem = (np.std(count_mat, axis=0, ddof=1) / np.sqrt(len(sessions))
+    freq_mat = count_mat / bin_size
+    psth_mean = np.mean(freq_mat, axis=0)
+    psth_sem = (np.std(freq_mat, axis=0, ddof=1) / np.sqrt(len(sessions))
                 if len(sessions) > 1 else np.zeros(len(bin_centers)))
 
     # Group moving averages

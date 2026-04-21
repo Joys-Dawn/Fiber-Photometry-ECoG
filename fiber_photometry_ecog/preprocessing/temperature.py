@@ -29,6 +29,8 @@ def process_temperature(
     temp_bit_volts: float,
     fs: float,
     config: TemperatureConfig | None = None,
+    slope: Optional[float] = None,
+    intercept: Optional[float] = None,
 ) -> TemperatureResult:
     """Convert raw ADC values to Celsius and extract landmarks.
 
@@ -37,7 +39,12 @@ def process_temperature(
     temperature_raw : raw ADC values (digital units from Open Ephys)
     temp_bit_volts : bit-to-volts conversion factor from oebin metadata
     fs : sampling rate (Hz)
-    config : temperature parameters (uses defaults if None)
+    config : temperature parameters (smoothing window, baseline duration).
+        Uses defaults if None.
+    slope, intercept : per-session calibration, T(C) = slope * V(mV) + intercept.
+        When None, falls back to `config.slope` / `config.intercept` (which are
+        Chandni's Physitemp defaults). Meiling's rigs pass rig-date-specific
+        values here; see `MEILING_RIG_CALIBRATIONS` in core/config.py.
 
     Returns
     -------
@@ -45,12 +52,16 @@ def process_temperature(
     """
     if config is None:
         config = TemperatureConfig()
+    if slope is None:
+        slope = config.slope
+    if intercept is None:
+        intercept = config.intercept
 
     # Convert to millivolts: raw * bit_volts gives volts, * 1000 for mV
     voltage_mv = temperature_raw * temp_bit_volts * 1000.0
 
-    # Linear calibration
-    temperature_c = config.slope * voltage_mv + config.intercept
+    # Linear calibration (per-session slope/intercept)
+    temperature_c = slope * voltage_mv + intercept
 
     # Moving average smoothing
     if config.smoothing_window > 1 and len(temperature_c) >= config.smoothing_window:
@@ -59,16 +70,32 @@ def process_temperature(
     else:
         temperature_smooth = temperature_c.copy()
 
-    # Landmarks
+    # Mask raw-signal dropouts: thermistor disconnects produce brief rail
+    # swings that survive smoothing as excursions far outside the mouse's
+    # physiological range. NaN them so plots show gaps and downstream code
+    # can skip them.
+    PHYS_LO, PHYS_HI = 20.0, 44.0
+    dropout_mask = (temperature_smooth < PHYS_LO) | (temperature_smooth > PHYS_HI)
+    if dropout_mask.any():
+        temperature_smooth = temperature_smooth.copy()
+        temperature_smooth[dropout_mask] = np.nan
+
+    # Landmarks (nan-aware so dropouts in the baseline window don't contaminate)
     baseline_n = int(config.baseline_duration_s * fs)
     baseline_n = min(baseline_n, len(temperature_smooth))
-    baseline_temp = float(np.mean(temperature_smooth[:baseline_n]))
+    baseline_temp = float(np.nanmean(temperature_smooth[:baseline_n]))
 
-    max_idx = int(np.argmax(temperature_smooth))
+    max_idx = int(np.nanargmax(temperature_smooth))
     max_temp = float(temperature_smooth[max_idx])
     max_temp_time = max_idx / fs
 
-    terminal_temp = float(temperature_smooth[-1])
+    # Terminal temp: fall back to the last non-NaN sample if the trace
+    # ends in a dropout.
+    if np.isnan(temperature_smooth[-1]):
+        valid = np.where(~np.isnan(temperature_smooth))[0]
+        terminal_temp = float(temperature_smooth[valid[-1]]) if len(valid) else float("nan")
+    else:
+        terminal_temp = float(temperature_smooth[-1])
 
     return TemperatureResult(
         temperature_c=temperature_c,

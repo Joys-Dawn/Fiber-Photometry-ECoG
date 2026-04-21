@@ -8,6 +8,7 @@ Three-tab interface following the EphysAutomatedAnalysis pattern:
 """
 
 import logging
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -24,10 +25,8 @@ from .core.config import (
     AnalysisConfig,
     PhotometryConfig,
     PreprocessingConfig,
-    TRANSIENT_CONFIGS,
 )
 from .core.data_models import (
-    ProcessedData,
     RawData,
     Session,
     SessionLandmarks,
@@ -40,15 +39,7 @@ from .data_loading import (
     read_ppd, read_oep, synchronize,
     scan_experiment_folder, extract_date_from_oep, read_data_log,
 )
-from .preprocessing import filter_ecog, process_temperature, detect_transients, detect_spikes
-from .preprocessing.photometry import (
-    ChandniStrategy,
-    MeilingStrategy,
-    IRLSStrategy,
-    z_score_baseline,
-    highpass_filter,
-    detrend_moving_average,
-)
+from .preprocessing import preprocess_session
 from .pairing.engine import assign_all_controls
 from .analysis import (
     compute_cohort_characteristics,
@@ -75,12 +66,6 @@ from .visualization import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-STRATEGY_MAP = {
-    "A": ChandniStrategy,
-    "B": MeilingStrategy,
-    "C": IRLSStrategy,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +171,7 @@ class FiberPhotometryApp:
         cols = ("cohort", "mouse_id", "genotype", "seizure", "sudep",
                 "include", "heat_start", "status")
         self.session_tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=12)
-        for col, w in zip(cols, [120, 80, 70, 60, 50, 55, 75, 80]):
+        for col, w in zip(cols, [120, 80, 70, 60, 50, 55, 75, 140]):
             self.session_tree.heading(col, text=col.replace("_", " ").title())
             self.session_tree.column(col, width=w, anchor="center")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.session_tree.yview)
@@ -371,7 +356,17 @@ class FiberPhotometryApp:
 
         # Match each discovered session to its log entry
         for d in discovered:
-            mouse_id = d["session_name"].split("_")[0] if "_" in d["session_name"] else d["session_name"]
+            # Extract mouse ID: leading digits if present (e.g. "1938het" -> "1938"),
+            # else everything before first "_" (e.g. "3993_session1" -> "3993"),
+            # else the full session name.
+            name = d["session_name"]
+            digits_match = re.match(r"^(\d+)", name)
+            if digits_match:
+                mouse_id = digits_match.group(1)
+            elif "_" in name:
+                mouse_id = name.split("_")[0]
+            else:
+                mouse_id = name
             d["mouse_id"] = mouse_id
 
             # Extract date from OEP folder
@@ -475,16 +470,24 @@ class FiberPhotometryApp:
         self._log_loading(f"Loading {len(to_load)} sessions...")
 
         def worker():
+            n_ok = 0
+            n_fail = 0
             for i, d in enumerate(to_load):
                 mouse_id = d["mouse_id"]
                 try:
                     self._log_loading(f"[{i+1}/{len(to_load)}] Loading {mouse_id}...")
 
                     ppd = read_ppd(d["ppd_path"])
+                    # Per-session channel overrides from the data log, else the
+                    # UI defaults. Temperature: None means auto-detect.
+                    sess_ecog_ch = d.get("ecog_channel") or ecog_ch
+                    sess_emg_ch = d.get("emg_channel") if d.get("emg_channel") is not None else emg_ch
+                    sess_temp_ch = d.get("temperature_channel")
                     oep = read_oep(
                         d["oep_path"],
-                        ecog_channel=ecog_ch,
-                        emg_channel=emg_ch,
+                        ecog_channel=sess_ecog_ch,
+                        emg_channel=sess_emg_ch,
+                        temperature_channel=sess_temp_ch,
                     )
                     sync = synchronize(ppd, oep)
                     self._log_loading(
@@ -494,6 +497,9 @@ class FiberPhotometryApp:
 
                     landmarks = SessionLandmarks(
                         heating_start_time=d["heating_start"],
+                        eec_time=d.get("eec_time"),
+                        ueo_time=d.get("ueo_time"),
+                        off_time=d.get("off_time"),
                     )
 
                     raw = RawData(
@@ -503,6 +509,8 @@ class FiberPhotometryApp:
                         emg=sync.emg,
                         temperature_raw=sync.temperature_raw,
                         temp_bit_volts=sync.temp_bit_volts,
+                        temp_slope=sync.temp_slope,
+                        temp_intercept=sync.temp_intercept,
                         time=sync.time,
                         fs=sync.fs,
                     )
@@ -510,6 +518,7 @@ class FiberPhotometryApp:
                     session = Session(
                         mouse_id=mouse_id,
                         genotype=d["genotype"],
+                        heating_session=d.get("heating_session", 1),
                         n_seizures=d["seizure"],
                         sudep=d["sudep"],
                         include_session=d["include"],
@@ -521,6 +530,7 @@ class FiberPhotometryApp:
                     session.date = d.get("date")
                     session.session_name = d.get("session_name")
                     self.sessions.append(session)
+                    n_ok += 1
 
                     # Update treeview status
                     items = self.session_tree.get_children()
@@ -529,9 +539,36 @@ class FiberPhotometryApp:
                         self.root.after(0, lambda idx=full_idx: self._update_session_status(idx, "loaded"))
 
                 except Exception as e:
-                    self._log_loading(f"  ERROR: {mouse_id}: {e}")
+                    n_fail += 1
+                    msg = str(e)
+                    low = msg.lower()
+                    if "temperature" in low:
+                        status = "failed: no temp"
+                    elif "sync" in low or "ttl" in low or "pulse" in low:
+                        status = "failed: sync"
+                    elif "ppd" in low:
+                        status = "failed: ppd"
+                    elif "oep" in low or "record" in low:
+                        status = "failed: oep"
+                    else:
+                        status = "failed"
+                    self._log_loading(f"  ERROR: {mouse_id}: {msg}")
+                    try:
+                        full_idx = self._discovered_sessions.index(d)
+                        self.root.after(
+                            0,
+                            lambda idx=full_idx, s=status: self._update_session_status(idx, s),
+                        )
+                    except ValueError:
+                        pass
 
-            self._log_loading(f"Done: {len(self.sessions)} sessions loaded.")
+            if n_fail > 0:
+                self._log_loading(
+                    f"Done: {n_ok} loaded, {n_fail} failed — "
+                    "see status column and errors above."
+                )
+            else:
+                self._log_loading(f"Done: {n_ok} sessions loaded.")
             self.running = False
 
         threading.Thread(target=worker, daemon=True).start()
@@ -571,6 +608,8 @@ class FiberPhotometryApp:
             self.session_tree.delete(item)
 
         self._log_loading(f"Loading {len(saved)} sessions (strategy {chosen})...")
+        self.output_dir = Path(self.output_dir_var.get())
+        sanity_out = str(self.output_dir / "plots" / "sanity")
         for path in saved:
             try:
                 session = load_session(path)
@@ -584,10 +623,20 @@ class FiberPhotometryApp:
                             session.n_seizures, "yes" if session.sudep else "",
                             include_str, "", status),
                 )
+                # Regenerate sanity check plots so loading cached data produces
+                # the same verification outputs as a fresh preprocessing run.
+                if session.processed is not None and session.raw is not None:
+                    try:
+                        plot_sanity_check(session, sanity_out, session.transients)
+                        plot_zoomed(session, sanity_out)
+                    except Exception as plot_err:
+                        self._log_loading(f"  WARN: sanity plots failed for "
+                                          f"{session.mouse_id}: {plot_err}")
             except Exception as e:
                 self._log_loading(f"  ERROR loading {path.name}: {e}")
 
-        self._log_loading(f"Loaded {len(self.sessions)} sessions (strategy {chosen}).")
+        self._log_loading(f"Loaded {len(self.sessions)} sessions (strategy {chosen}). "
+                          f"Sanity plots in {sanity_out}")
         # Set strategy dropdown to match loaded data
         self.strategy_var.set(chosen)
         if self.sessions and self.sessions[0].processed:
@@ -796,88 +845,29 @@ class FiberPhotometryApp:
 
                 config = self.preprocessing_config
                 session.preprocessing_config = config
-                raw = session.raw
 
                 # Set baseline_end_s from heating start
                 config.photometry.baseline_end_s = session.landmarks.heating_start_time
 
-                # 1. Temperature
-                temp_result = process_temperature(
-                    raw.temperature_raw, raw.temp_bit_volts, raw.fs, config.temperature)
-                self._log_preproc(f"  Temperature: baseline={temp_result.baseline_temp:.1f}°C, "
-                                  f"max={temp_result.max_temp:.1f}°C")
-
-                # Update landmarks with computed temps
-                session.landmarks.baseline_temp = temp_result.baseline_temp
-                session.landmarks.max_temp = temp_result.max_temp
-                session.landmarks.max_temp_time = temp_result.max_temp_time
-                session.landmarks.terminal_temp = temp_result.terminal_temp
-                session.landmarks.terminal_time = raw.time[-1]
-
-                # 2. ECoG filtering
-                ecog_filt = filter_ecog(raw.ecog, raw.fs, config.ecog)
-                self._log_preproc(f"  ECoG filtered ({config.ecog.bandpass_low}-{config.ecog.bandpass_high} Hz)")
-
-                # 3. Photometry
-                strategy_cls = STRATEGY_MAP[config.photometry.strategy]
-                strategy = strategy_cls()
                 try:
-                    phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, raw.fs, config.photometry)
+                    preprocess_session(session, config)
                 except ValueError as exc:
                     self._log_preproc(f"  SKIPPED: {exc}")
                     self.root.after(0, lambda idx=i: self._update_session_status(idx, "skipped"))
                     continue
 
-                # Mean stream: z-score relative to baseline
-                phot_result.dff_zscore = z_score_baseline(
-                    phot_result.dff, raw.fs, session.landmarks.heating_start_time)
-
-                # Transient stream: detrend, then z-score
-                if config.photometry.strategy == "A":
-                    # Strategy A: HPF then whole-signal z-score (per Chandni's detect_transients.m)
-                    dff_hpf_raw = highpass_filter(phot_result.dff, raw.fs)
-                    phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
-                else:
-                    # Strategy B/C: Wallace 2025 moving-avg detrend, then baseline z-score
-                    # Baseline z-score avoids inflating std during heating (PASTa/Donka 2025)
-                    dff_detrended = detrend_moving_average(
-                        phot_result.dff, raw.fs, config.photometry.detrend_window_s)
-                    phot_result.dff_hpf = z_score_baseline(
-                        dff_detrended, raw.fs, session.landmarks.heating_start_time)
+                self._log_preproc(
+                    f"  Temperature: baseline={session.landmarks.baseline_temp:.1f}°C, "
+                    f"max={session.landmarks.max_temp:.1f}°C")
+                self._log_preproc(
+                    f"  ECoG filtered ({config.ecog.bandpass_low}-{config.ecog.bandpass_high} Hz)")
                 self._log_preproc(f"  Photometry: strategy {config.photometry.strategy}")
+                self._log_preproc(f"  Transients: {len(session.transients)} detected")
+                self._log_preproc(f"  Spikes: {len(session.spikes)} detected")
 
-                # 4. Store processed data
-                session.processed = ProcessedData(
-                    photometry=phot_result,
-                    ecog_filtered=ecog_filt,
-                    temperature_c=temp_result.temperature_c,
-                    temperature_smooth=temp_result.temperature_smooth,
-                    time=raw.time,
-                    fs=raw.fs,
-                )
-
-                # 5. Transient detection (detect on zdff_hpf, measure on raw dff)
-                transients = detect_transients(
-                    phot_result.dff_hpf, phot_result.dff, raw.fs,
-                    TRANSIENT_CONFIGS[config.photometry.strategy],
-                    temp_result.temperature_smooth)
-                session.transients = transients
-                self._log_preproc(f"  Transients: {len(transients)} detected")
-
-                # 6. Spike detection
-                exclusion_zones = []
-                if session.landmarks.ueo_time is not None and session.landmarks.off_time is not None:
-                    exclusion_zones.append((session.landmarks.ueo_time, session.landmarks.off_time))
-                spikes = detect_spikes(
-                    ecog_filt, raw.fs, session.landmarks.heating_start_time, config.spike_detection,
-                    exclusion_zones=exclusion_zones if exclusion_zones else None)
-                self._log_preproc(f"  Spikes: {len(spikes)} detected")
-                # Store spikes on session (will be used by spike_triggered)
-                session.spikes = spikes
-
-                # 7. Save sanity check plots
+                # Save sanity check plots
                 out = str(self.output_dir / "plots" / "sanity")
-                path_v1 = plot_sanity_check(session, out, transients)
+                path_v1 = plot_sanity_check(session, out, session.transients)
                 path_v2 = plot_zoomed(session, out)
                 self._log_preproc(f"  Plots saved: {path_v1}, {path_v2}")
 

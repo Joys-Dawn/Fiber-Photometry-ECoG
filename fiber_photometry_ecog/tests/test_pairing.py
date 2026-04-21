@@ -164,12 +164,13 @@ class TestFindFirstTimeAtTemp:
         # Should be in the first half
         assert t < 5.0
 
-    def test_never_reaches_temp(self):
+    def test_never_reaches_temp_returns_closest(self):
+        # Per temp_eq_times.m: always take the closest sample, no threshold.
         fs = 10.0
         trace = np.linspace(36.0, 39.0, 100)
         t = _find_first_time_at_temp(trace, fs, 42.0)
-        # 42 is more than 1°C away from max of 39 → None
-        assert t is None
+        # Target 42°C is never reached; closest is 39°C at end of trace (idx 99).
+        assert t == pytest.approx(99 / fs)
 
     def test_empty_trace_with_max_idx(self):
         t = _find_first_time_at_temp(np.array([]), 10.0, 40.0, max_idx=0)

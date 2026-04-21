@@ -19,6 +19,7 @@ from ._helpers import filter_transients_by_time, compute_sem
 @dataclass
 class BaselineTransientSessionResult:
     mouse_id: str
+    heating_session: int
     n_transients: int
     duration_s: float               # baseline period duration
     frequency_hz: float             # count / duration
@@ -66,6 +67,7 @@ def compute_baseline_transients(
 
         session_results.append(BaselineTransientSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             n_transients=n,
             duration_s=duration,
             frequency_hz=freq,

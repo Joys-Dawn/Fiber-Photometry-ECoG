@@ -9,7 +9,6 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -18,31 +17,15 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 from fiber_photometry_ecog.data_loading import read_ppd, read_oep, synchronize
-from fiber_photometry_ecog.preprocessing import (
-    filter_ecog,
-    process_temperature,
-    detect_transients,
-    detect_spikes,
-)
-from fiber_photometry_ecog.preprocessing.photometry import (
-    ChandniStrategy,
-    MeilingStrategy,
-    IRLSStrategy,
-    z_score_baseline,
-    highpass_filter,
-    detrend_moving_average,
-)
+from fiber_photometry_ecog.preprocessing import preprocess_session
 from fiber_photometry_ecog.core.config import (
     PreprocessingConfig,
     AnalysisConfig,
-    SpikeDetectionConfig,
-    TRANSIENT_CONFIGS,
 )
 from fiber_photometry_ecog.core.data_models import (
     Session,
     SessionLandmarks,
     RawData,
-    ProcessedData,
 )
 from fiber_photometry_ecog.pairing.engine import assign_all_controls
 from fiber_photometry_ecog.analysis import (
@@ -107,7 +90,6 @@ TEST_SESSIONS = [
 ]
 
 OUTPUT_DIR = _REPO_ROOT / "fiber_photometry_ecog" / "tests" / "test_e2e_output"
-STRATEGY_MAP = {"A": ChandniStrategy, "B": MeilingStrategy, "C": IRLSStrategy}
 
 
 def load_and_sync(info: dict) -> tuple:
@@ -133,6 +115,8 @@ def load_and_sync(info: dict) -> tuple:
         emg=sync.emg,
         temperature_raw=sync.temperature_raw,
         temp_bit_volts=sync.temp_bit_volts,
+        temp_slope=sync.temp_slope,
+        temp_intercept=sync.temp_intercept,
         time=sync.time,
         fs=sync.fs,
     )
@@ -157,79 +141,11 @@ def load_and_sync(info: dict) -> tuple:
 
 def preprocess(session: Session, strategy_name: str, config: PreprocessingConfig) -> None:
     """Step 2: Run all preprocessing on a session."""
-    raw = session.raw
-    fs = raw.fs
+    config.photometry.strategy = strategy_name
+    preprocess_session(session, config)
     mouse = session.mouse_id
-
-    # Temperature
-    temp_result = process_temperature(
-        raw.temperature_raw, raw.temp_bit_volts, fs, config.temperature,
-    )
-    session.landmarks.baseline_temp = temp_result.baseline_temp
-    session.landmarks.max_temp = temp_result.max_temp
-    session.landmarks.max_temp_time = temp_result.max_temp_time
-    session.landmarks.terminal_temp = temp_result.terminal_temp
-    session.landmarks.terminal_time = len(temp_result.temperature_c) / fs
-
-    # Fill in temperatures at seizure landmarks
-    if session.landmarks.eec_time is not None:
-        idx = min(int(round(session.landmarks.eec_time * fs)), len(temp_result.temperature_smooth) - 1)
-        session.landmarks.eec_temp = float(temp_result.temperature_smooth[idx])
-    if session.landmarks.ueo_time is not None:
-        idx = min(int(round(session.landmarks.ueo_time * fs)), len(temp_result.temperature_smooth) - 1)
-        session.landmarks.ueo_temp = float(temp_result.temperature_smooth[idx])
-    logger.info(f"  {mouse} temp: baseline={temp_result.baseline_temp:.1f}, max={temp_result.max_temp:.1f}")
-
-    # ECoG
-    ecog_filtered = filter_ecog(raw.ecog, fs, config.ecog)
-    logger.info(f"  {mouse} ECoG filtered")
-
-    # Photometry
-    strategy_cls = STRATEGY_MAP[strategy_name]
-    strategy = strategy_cls()
-    phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, fs, config.photometry)
-    logger.info(f"  {mouse} photometry: strategy {strategy_name}")
-
-    # Mean stream: z-score relative to baseline
-    phot_result.dff_zscore = z_score_baseline(
-        phot_result.dff, fs, session.landmarks.heating_start_time,
-    )
-
-    # Transient stream: detrend, then z-score
-    if strategy_name == "A":
-        # Strategy A: HPF then whole-signal z-score (per Chandni's detect_transients.m)
-        dff_hpf_raw = highpass_filter(phot_result.dff, fs)
-        phot_result.dff_hpf = (dff_hpf_raw - np.mean(dff_hpf_raw)) / np.std(dff_hpf_raw)
-    else:
-        # Strategy B/C: Wallace 2025 moving-avg detrend, then whole-session z-score
-        dff_detrended = detrend_moving_average(phot_result.dff, fs, config.photometry.detrend_window_s)
-        phot_result.dff_hpf = (dff_detrended - np.mean(dff_detrended)) / np.std(dff_detrended)
-
-    # Transients (detect on zdff_hpf, measure on raw dff)
-    transients = detect_transients(
-        phot_result.dff_hpf, phot_result.dff, fs,
-        TRANSIENT_CONFIGS[config.photometry.strategy], temp_result.temperature_smooth,
-    )
-    session.transients = transients
-    logger.info(f"  {mouse} transients: {len(transients)} detected")
-
-    # Spikes
-    spikes = detect_spikes(
-        ecog_filtered, fs, session.landmarks.heating_start_time,
-        config.spike_detection,
-        exclusion_zones=[],
-    )
-    session.spikes = spikes
-    logger.info(f"  {mouse} spikes: {len(spikes)} detected")
-
-    session.processed = ProcessedData(
-        photometry=phot_result,
-        ecog_filtered=ecog_filtered,
-        temperature_c=temp_result.temperature_c,
-        temperature_smooth=temp_result.temperature_smooth,
-        time=raw.time,
-        fs=fs,
-    )
+    logger.info(f"  {mouse} preprocessed (strategy {strategy_name}): "
+                f"{len(session.transients)} transients, {len(session.spikes)} spikes")
 
 
 def run_analysis(cohorts: dict, config: AnalysisConfig, output_dir: Path) -> None:

@@ -95,10 +95,12 @@ def plot_sanity_check(
     ax.set_ylabel("Temp (°C)")
     ax.set_xlabel("Time (s)")
 
-    fig.suptitle(f"{session.mouse_id} — sanity check", fontsize=10)
+    fig.suptitle(f"{session.mouse_id} S{session.heating_session} — sanity check", fontsize=10)
     fig.tight_layout()
 
-    path = os.path.join(output_dir, f"{session.mouse_id}_v1_sanity.png")
+    path = os.path.join(
+        output_dir, f"{session.mouse_id}_S{session.heating_session}_v1_sanity.png"
+    )
     fig.savefig(path, dpi=150)
     plt.close("all")
     return path
@@ -151,10 +153,12 @@ def plot_zoomed(
     ax.set_ylabel("Filt ECoG (µV)")
     ax.set_xlabel("Time relative to seizure onset (s)")
 
-    fig.suptitle(f"{session.mouse_id} — zoomed", fontsize=10)
+    fig.suptitle(f"{session.mouse_id} S{session.heating_session} — zoomed", fontsize=10)
     fig.tight_layout()
 
-    path = os.path.join(output_dir, f"{session.mouse_id}_v2_zoomed.png")
+    path = os.path.join(
+        output_dir, f"{session.mouse_id}_S{session.heating_session}_v2_zoomed.png"
+    )
     fig.savefig(path, dpi=150)
     plt.close("all")
     return path

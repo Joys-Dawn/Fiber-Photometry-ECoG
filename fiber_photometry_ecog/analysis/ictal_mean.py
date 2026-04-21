@@ -40,6 +40,7 @@ class TriggeredAverage:
 @dataclass
 class IctalMeanSessionResult:
     mouse_id: str
+    heating_session: int
     seizure_mean: float         # mean z-ΔF/F during seizure/equivalent period
     baseline_mean: float        # mean z-ΔF/F during baseline
     delta_preictal_ictal: float # seizure_mean - late_heat_mean
@@ -166,6 +167,7 @@ def compute_ictal_mean(
 
         session_results.append(IctalMeanSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             seizure_mean=sz_mean,
             baseline_mean=bl_mean,
             delta_preictal_ictal=delta,

@@ -20,6 +20,7 @@ class CohortSessionResult:
     mouse_id: str
     baseline_temp: Optional[float]      # degrees C
     seizure_threshold_temp: Optional[float]  # temp at UEO (or equivalent)
+    heating_session: int = 1            # 1, 2, 3... for this mouse
 
 
 @dataclass
@@ -49,6 +50,7 @@ def compute_cohort_characteristics(
             mouse_id=s.mouse_id,
             baseline_temp=bl_temp,
             seizure_threshold_temp=sz_temp,
+            heating_session=s.heating_session,
         ))
 
         if bl_temp is not None:

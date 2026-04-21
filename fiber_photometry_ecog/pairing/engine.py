@@ -150,14 +150,10 @@ def _find_first_time_at_temp(
     if len(heating) == 0:
         return None
 
-    # Find the sample closest to target_temp (first occurrence)
+    # Take the first sample closest to target_temp, unconditionally.
+    # Matches temp_eq_times.m: find(min(abs(temp - target)),1,'first').
     diff = np.abs(heating - target_temp)
     best_idx = int(np.argmin(diff))
-
-    # Check that the match is reasonable (within 1°C)
-    if diff[best_idx] > 1.0:
-        return None
-
     return best_idx / fs
 
 

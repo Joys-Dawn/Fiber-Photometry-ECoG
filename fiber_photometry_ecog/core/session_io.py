@@ -103,6 +103,8 @@ def save_session(session: Session, sessions_dir: Path) -> Path:
         "session_name": session.session_name,
         "raw_fs": raw.fs if raw else None,
         "raw_temp_bit_volts": raw.temp_bit_volts if raw else None,
+        "raw_temp_slope": raw.temp_slope if raw else None,
+        "raw_temp_intercept": raw.temp_intercept if raw else None,
         "proc_fs": proc.fs if proc else None,
     }
 
@@ -148,7 +150,9 @@ def load_session(path: Path) -> Session:
     data = np.load(path)
     meta = json.loads(str(data["_metadata_json"]))
 
-    # Reconstruct raw
+    # Reconstruct raw. temp_slope/temp_intercept default to Physitemp constants
+    # for backward compatibility with older cached sessions that predate the
+    # per-session calibration fields.
     raw = RawData(
         signal_470=data["raw_signal_470"],
         signal_405=data["raw_signal_405"],
@@ -156,6 +160,8 @@ def load_session(path: Path) -> Session:
         emg=data["raw_emg"] if "raw_emg" in data else None,
         temperature_raw=data["raw_temperature_raw"],
         temp_bit_volts=meta["raw_temp_bit_volts"],
+        temp_slope=meta.get("raw_temp_slope", 0.0981),
+        temp_intercept=meta.get("raw_temp_intercept", 8.81),
         time=data["raw_time"],
         fs=meta["raw_fs"],
     )

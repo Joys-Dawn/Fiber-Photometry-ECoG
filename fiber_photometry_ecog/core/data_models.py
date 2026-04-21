@@ -72,6 +72,8 @@ class RawData:
     emg: Optional[np.ndarray]
     temperature_raw: np.ndarray
     temp_bit_volts: float
+    temp_slope: float                     # T(C) = slope * V(mV) + intercept
+    temp_intercept: float
     time: np.ndarray
     fs: float
 

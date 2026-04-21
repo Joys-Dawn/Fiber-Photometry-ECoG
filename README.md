@@ -112,7 +112,7 @@ Two signals are derived from the corrected `ΔF/F`:
 | **Mean** | Mean ΔF/F analyses | Z-scored to the pre-heating baseline |
 | **Transient** | Transient detection | Detrended, then z-scored to baseline |
 
-Baseline z-scoring is used for strategies B and C to avoid inflating the standard deviation during heating, which would compress z-scores and cause the detection height gate to miss real transients (per PASTa / Donka 2025).
+All strategies use baseline z-scoring to avoid inflating the standard deviation during heating, which would compress z-scores and cause the detection height gate to miss real transients (per PASTa / Donka 2025).
 
 ### Transient detection
 
@@ -146,5 +146,5 @@ Transient properties are measured on the raw `ΔF/F` (per Wallace et al. 2025): 
 ## References
 
 - **Wallace et al. 2025** — Two-gate transient detection method. PMC11888193.
-- **Donka & Bhatt 2025 (PASTa)** — Photometry analysis standardized tools; baseline z-scoring for paradigms that change signal variance.
+- **Donka, Konanur, Loh, Roitman & Roitman 2025 (PASTa)** — Photometry analysis standardized tools; baseline z-scoring for paradigms that change signal variance. *Current Protocols* 5(7):e70161. DOI 10.1002/cpz1.70161.
 - **Simpson et al. 2024** — Guidelines for z-scoring fiber photometry data.

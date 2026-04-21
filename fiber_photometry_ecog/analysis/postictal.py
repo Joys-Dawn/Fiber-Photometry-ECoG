@@ -14,7 +14,6 @@ import numpy as np
 from ..core.config import AnalysisConfig
 from ..core.data_models import Session
 from ._helpers import (
-    get_ueo_temp,
     get_signal_and_time,
     get_temperature,
     compute_sem,
@@ -25,6 +24,7 @@ from ._helpers import (
 @dataclass
 class PostictalSessionResult:
     mouse_id: str
+    heating_session: int
     cooling_bin_centers: np.ndarray
     cooling_bin_means: np.ndarray       # mean z-ΔF/F per temp bin (cooling only)
     final_time: float                   # seconds from start
@@ -66,17 +66,19 @@ def compute_postictal(
     for s in sessions:
         signal, time, fs = get_signal_and_time(s)
         temperature = get_temperature(s)
-        ueo_temp = get_ueo_temp(s)
 
-        # Find peak temperature index (start of cooling)
-        max_idx = int(np.argmax(temperature))
+        # Find peak temperature index (start of cooling). nanargmax so
+        # thermistor dropouts (NaN) don't masquerade as the peak — the real
+        # peak still exists in the trace, np.argmax just can't see past NaN.
+        max_idx = int(np.nanargmax(temperature))
+        max_temp = float(temperature[max_idx])
 
         # Cooling portion: from max temp to end
         cool_signal = signal[max_idx:]
         cool_temp = temperature[max_idx:]
 
-        # Relative to seizure onset temp
-        cool_temp_rel = cool_temp - ueo_temp
+        # Relative to max temperature (per spec: "temp rel to max")
+        cool_temp_rel = cool_temp - max_temp
         cooling_binned = bin_signal_by_temperature(cool_signal, cool_temp_rel, bin_edges)
         all_cooling.append(cooling_binned)
 
@@ -93,6 +95,7 @@ def compute_postictal(
 
         session_results.append(PostictalSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             cooling_bin_centers=bin_centers.copy(),
             cooling_bin_means=cooling_binned,
             final_time=final_time,

@@ -83,18 +83,54 @@ class TransientConfig:
 #   Our dF/F is fractional (0.08 = 8%), so 0.02 = 2 percentage points equivalent.
 TRANSIENT_CONFIGS = {
     "A": TransientConfig(min_prominence=1.0),
-    "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.035),
+    "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
     "C": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
 }
 
 
 @dataclass
 class TemperatureConfig:
-    """Temperature conversion and landmark extraction parameters."""
+    """Temperature conversion and landmark extraction parameters.
+
+    `slope` / `intercept` give the fallback calibration used by Chandni's
+    rig (thermistor on NI-DAQ USB-6009 AI0): T(C) = slope * V(mV) + intercept.
+    Meiling's rigs do not have a NI-DAQ; they use date-range-specific
+    calibrations from MEILING_RIG_CALIBRATIONS (see below) applied to the
+    thermistor on Intan ADC1 of the Acquisition Board stream.
+    """
     slope: float = 0.0981            # T(C) = slope * V(mV) + intercept
     intercept: float = 8.81
     smoothing_window: int = 300      # samples for moving average
     baseline_duration_s: float = 60.0  # seconds from start to compute baseline temp
+
+
+# Date-range calibrations supplied by Meiling for rigs without a NI-DAQ.
+# Originals were given as T = a * V_volts + b (temperature_probe = voltage in V).
+# Stored here as (start_date, end_date, slope_per_mV, intercept_C). Dates are
+# inclusive, ISO format (YYYY-MM-DD). None means open-ended.
+MEILING_RIG_CALIBRATIONS = [
+    (None,         "2024-03-13",  0.08817, 375.77),   # Before 2024-03-14
+    ("2024-03-14", "2024-05-23", -0.10342,   9.69),   # 2024-03-14 to 2024-05-23
+    ("2024-05-24", "2025-02-10",  0.09013,   5.79),   # 2024-05-24 to 2025-02-10
+    ("2025-02-11", "2025-07-22",  0.09855,   2.86),   # 2025-02-11 to 2025-07-22
+    ("2025-07-23", None,          0.09597,   4.36),   # 2025-07-23 onwards
+]
+
+
+def lookup_meiling_calibration(recording_date: str) -> tuple[float, float]:
+    """Return (slope_per_mV, intercept_C) for a Meiling rig recording date.
+
+    `recording_date` is a YYYY-MM-DD string. Raises ValueError if no range
+    matches (shouldn't happen for in-bounds dates).
+    """
+    for start, end, slope, intercept in MEILING_RIG_CALIBRATIONS:
+        if (start is None or recording_date >= start) and \
+           (end is None or recording_date <= end):
+            return slope, intercept
+    raise ValueError(
+        f"No Meiling rig calibration covers recording date {recording_date!r}. "
+        f"Check MEILING_RIG_CALIBRATIONS in core/config.py."
+    )
 
 
 @dataclass

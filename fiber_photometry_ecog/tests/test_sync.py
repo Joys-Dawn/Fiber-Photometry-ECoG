@@ -87,6 +87,8 @@ def make_synthetic_oep(
         emg=None,
         temperature_raw=temperature_raw,
         temp_bit_volts=0.000152587890625,
+        temp_slope=0.0981,
+        temp_intercept=8.81,
         fs=fs,
         sample_numbers=np.arange(n_samples, dtype=np.int64),
         timestamps=np.arange(n_samples) / fs,

@@ -40,6 +40,7 @@ def _group_mean_sem(
 @dataclass
 class SpikeTriggeredSessionResult:
     mouse_id: str
+    heating_session: int
     n_spikes: int
     mean_trace: np.ndarray          # mean photometry aligned to spikes
     sem_trace: np.ndarray
@@ -152,6 +153,7 @@ def compute_spike_triggered_average(
         all_eeg_means.append(eeg_mean)
         session_results.append(SpikeTriggeredSessionResult(
             mouse_id=s.mouse_id,
+            heating_session=s.heating_session,
             n_spikes=n_spikes,
             mean_trace=mean_trace,
             sem_trace=sem_trace,

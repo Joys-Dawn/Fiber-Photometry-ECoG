@@ -26,10 +26,12 @@ The reader handles both: user specifies which stream and channel indices to use.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import json
 import numpy as np
+
+from ..core.config import TemperatureConfig, lookup_meiling_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,8 @@ class OEPData:
     emg: Optional[np.ndarray]      # selected EMG channel (uV), None if not requested
     temperature_raw: np.ndarray    # raw temperature ADC (digital units, needs bit_volts conversion)
     temp_bit_volts: float          # bit-to-volts factor for temperature channel
+    temp_slope: float              # per-session T(C) = slope * V(mV) + intercept
+    temp_intercept: float          # per-session intercept (C)
     fs: float                      # sampling rate (Hz)
     sample_numbers: np.ndarray     # sample number array
     timestamps: np.ndarray         # timestamp array (seconds)
@@ -150,35 +154,69 @@ def _load_ttl_events(rec_dir: Path, oebin: Dict[str, Any]) -> tuple[np.ndarray, 
     return sample_numbers, states, timestamps
 
 
+def _extract_session_date(session_dir: Path) -> Optional[str]:
+    """Extract YYYY-MM-DD from an Open Ephys session folder name."""
+    name = session_dir.name
+    if len(name) >= 10 and name[4] == "-" and name[7] == "-":
+        return name[:10]
+    return None
+
+
+def _find_nidaq_stream(
+    continuous_streams: List[Dict[str, Any]],
+) -> Optional[int]:
+    """Return the index of a NI-DAQ stream if one is present, else None.
+
+    Chandni's rig records the thermistor on a standalone NI-DAQ USB-6009
+    board that surfaces as its own continuous stream. Meiling's rigs don't
+    have one, so the thermistor lives on an ADC input of the Intan
+    Acquisition Board stream instead.
+    """
+    for si, s in enumerate(continuous_streams):
+        name = (s.get("folder_name", "") + " " + s.get("source_processor_name", "")).upper()
+        if "NI-DAQ" in name or "NIDAQ" in name:
+            return si
+    return None
+
+
 def read_oep(
     session_dir: str | Path,
     ecog_channel: int = 2,
     emg_channel: Optional[int] = 3,
+    temperature_channel: Optional[int] = None,
+    temperature_stream_idx: Optional[int] = None,
     ecog_stream_idx: int = 0,
     recording_num: int = 1,
 ) -> OEPData:
     """Read an Open Ephys binary recording session.
+
+    Temperature is resolved as follows. If a NI-DAQ stream is present
+    (Chandni's rig), the thermistor is assumed to live on AI0 and the
+    default calibration T(C) = 0.0981 * V(mV) + 8.81 is used. Otherwise
+    (Meiling's rigs) the thermistor is assumed to live on ADC1 of the
+    Intan Acquisition Board stream, and the calibration is looked up by
+    recording date in `MEILING_RIG_CALIBRATIONS`. If the caller specifies
+    `temperature_channel` explicitly, that channel overrides the default
+    pick, but the same calibration rule (NI-DAQ default vs date-keyed
+    Meiling) still applies based on which stream contains the channel.
 
     Parameters
     ----------
     session_dir : path to the session directory (contains Record Node folders)
     ecog_channel : 1-indexed ECoG channel number (default 2)
     emg_channel : 1-indexed EMG channel number (default 3), or None to skip
+    temperature_channel : 1-indexed temperature channel override. If None,
+        uses AI0 (NI-DAQ rigs) or ADC1 (Intan-only rigs).
+    temperature_stream_idx : 0-indexed stream containing the override
+        channel. Ignored unless `temperature_channel` is given.
     ecog_stream_idx : 0-indexed stream for ECoG data (default 0)
     recording_num : which recording to load (default 1)
 
     Returns
     -------
-    OEPData with ECoG, EMG (optional), temperature, TTL events, and metadata.
-
-    Notes
-    -----
-    Temperature is always loaded from the NI-DAQ stream (channel 1 / AI0),
-    matching Chandni's MATLAB config (cfg.NIstream, cfg.tempADC=1).  When
-    only one stream exists the NI-DAQ *is* that stream, so channel 1 is used.
-
-    Channel indexing follows Open Ephys convention (1-indexed in the GUI,
-    converted to 0-indexed internally).
+    OEPData with ECoG, EMG (optional), temperature, calibration, TTL events,
+    and metadata. Channel indexing follows Open Ephys convention (1-indexed
+    in the GUI, converted to 0-indexed internally).
     """
     session_dir = Path(session_dir)
     if not session_dir.exists():
@@ -209,8 +247,6 @@ def read_oep(
             f"(stream has {ecog_data.shape[0]} channels)"
         )
     ecog_signal = ecog_data[ecog_ch_idx, :].astype(np.float64)
-
-    # Convert to uV using bit_volts
     ecog_bit_volts = ecog_stream_info["channels"][ecog_ch_idx]["bit_volts"]
     ecog_signal *= ecog_bit_volts
 
@@ -228,33 +264,66 @@ def read_oep(
         emg_signal *= emg_bit_volts
 
     # --- Load temperature ---
-    # Per Chandni's MATLAB code (cfg.NIstream, cfg.tempADC=1), temperature
-    # is always channel 1 (AI0) on the NI-DAQ stream.
-    if len(continuous_streams) > 1:
-        # Two-stream setup: find the non-ECoG stream (NI-DAQ)
-        ni_idx = None
-        for si, s in enumerate(continuous_streams):
-            if si != ecog_stream_idx and "NI" in s.get("source_processor_name", ""):
-                ni_idx = si
-                break
-        if ni_idx is None:
-            ni_idx = 1 if ecog_stream_idx == 0 else 0
+    temp_cfg = TemperatureConfig()
+    nidaq_idx = _find_nidaq_stream(continuous_streams)
 
-        temp_stream_info = continuous_streams[ni_idx]
+    if temperature_stream_idx is not None:
+        ts_idx = temperature_stream_idx
+    elif nidaq_idx is not None:
+        ts_idx = nidaq_idx
+    else:
+        ts_idx = ecog_stream_idx
+
+    # Default channel: AI0 for NI-DAQ rigs, ADC1 for Intan-only rigs.
+    # ADC1 on the 24-channel Intan stream is at 0-indexed channel 16
+    # (channels 0..15 are CH1..CH16 neural, 16..23 are ADC1..ADC8).
+    if temperature_channel is not None:
+        temp_ch_idx = temperature_channel - 1
+    elif ts_idx == nidaq_idx:
+        temp_ch_idx = 0   # AI0
+    else:
+        temp_ch_idx = 16  # ADC1 on the Intan stream
+
+    temp_stream_info = continuous_streams[ts_idx]
+    if ts_idx == ecog_stream_idx:
+        temp_data = ecog_data
+    else:
         temp_data, _, _ = _load_continuous_stream(rec_dir, temp_stream_info)
-        temp_ch_idx = 0  # channel 1 (AI0)
-        temp_bit_volts = temp_stream_info["channels"][temp_ch_idx]["bit_volts"]
+
+    if temp_ch_idx < 0 or temp_ch_idx >= temp_data.shape[0]:
+        raise ValueError(
+            f"Temperature channel index {temp_ch_idx} out of range "
+            f"(stream {ts_idx} has {temp_data.shape[0]} channels)"
+        )
+
+    temp_bit_volts = temp_stream_info["channels"][temp_ch_idx]["bit_volts"]
+    temperature_raw = temp_data[temp_ch_idx, :].astype(np.float64)
+
+    # Calibration: NI-DAQ rig uses the Physitemp formula in TemperatureConfig;
+    # Intan-only (Meiling) rigs use the date-range mapping Meiling provided.
+    if ts_idx == nidaq_idx:
+        temp_slope = temp_cfg.slope
+        temp_intercept = temp_cfg.intercept
         logger.info(
-            "Temperature: stream %d (%s) channel 1",
-            ni_idx, temp_stream_info["source_processor_name"],
+            "Temperature: NI-DAQ stream %d channel %d (AI0), "
+            "calibration T=%.4f*mV+%.2f",
+            ts_idx, temp_ch_idx + 1, temp_slope, temp_intercept,
         )
     else:
-        # Single-stream setup: NI-DAQ is the only stream, channel 1
-        temp_ch_idx = 0
-        temp_data = ecog_data
-        temp_bit_volts = ecog_stream_info["channels"][temp_ch_idx]["bit_volts"]
-
-    temperature_raw = temp_data[temp_ch_idx, :].astype(np.float64)
+        rec_date = _extract_session_date(session_dir)
+        if rec_date is None:
+            raise ValueError(
+                f"Cannot determine recording date from session folder "
+                f"{session_dir.name!r}; required to select the Meiling rig "
+                f"calibration."
+            )
+        temp_slope, temp_intercept = lookup_meiling_calibration(rec_date)
+        logger.info(
+            "Temperature: Intan stream %d channel %d (ADC%d), date=%s, "
+            "calibration T=%.5f*mV+%.2f",
+            ts_idx, temp_ch_idx + 1, temp_ch_idx - 15, rec_date,
+            temp_slope, temp_intercept,
+        )
 
     # --- Load TTL events ---
     ttl_samples, ttl_states, ttl_timestamps = _load_ttl_events(rec_dir, oebin)
@@ -264,6 +333,8 @@ def read_oep(
         emg=emg_signal,
         temperature_raw=temperature_raw,
         temp_bit_volts=temp_bit_volts,
+        temp_slope=temp_slope,
+        temp_intercept=temp_intercept,
         fs=fs,
         sample_numbers=sample_numbers,
         timestamps=timestamps,

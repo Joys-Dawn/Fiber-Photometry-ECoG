@@ -71,13 +71,11 @@ def _irls_regression(
 
     Returns
     -------
-    (slope, intercept) tuple.
+    (slope, intercept)
     """
-    # Design matrix: [x, 1]
     A = np.column_stack([x, np.ones(len(x))])
 
     # Hat-matrix diagonal h_i = A_i @ (A'A)^{-1} @ A_i'
-    # Only need the 2x2 inverse, then vectorised dot product for diagonal
     ATA_inv = np.linalg.inv(A.T @ A)
     h = np.sum((A @ ATA_inv) * A, axis=1)
 
@@ -100,7 +98,7 @@ def _irls_regression(
             break
         params = new_params
 
-    return float(params[0]), float(params[1])
+    return tuple(float(p) for p in params)
 
 
 class IRLSStrategy:
@@ -112,6 +110,7 @@ class IRLSStrategy:
         signal_405: np.ndarray,
         fs: float,
         config: PhotometryConfig | None = None,
+        **kwargs,
     ) -> PhotometryResult:
         """Apply IRLS-based photometry preprocessing (Keevers 2025).
 
@@ -139,12 +138,6 @@ class IRLSStrategy:
         irls_tol = config.irls_tol
 
         # --- Step 1: Low-pass filter both channels + mean correction ---
-        # Matches MATLAB: lowpass(signal, cutoff, fs, ImpulseResponse="iir",
-        # Steepness=0.95) which uses a minimum-order Butterworth with:
-        #   - passband ripple = 0.1 dB (fixed)
-        #   - stopband attenuation = 60 dB (default)
-        #   - transition width W = (0.99 - 0.98*steepness) * (f_nyq - fpass)
-        # Then corrects: filtered += mean(raw) - mean(filtered)
         steepness = 0.95
         f_nyq = fs / 2
         transition_w = (0.99 - 0.98 * steepness) * (f_nyq - cutoff)
@@ -160,17 +153,14 @@ class IRLSStrategy:
         filt_405 += np.mean(signal_405) - np.mean(filt_405)
 
         # --- Step 2: IRLS robust regression on filtered signals ---
-        # Fit: filt_470 = slope * filt_405 + intercept
-        slope, intercept = _irls_regression(
+        coeffs = _irls_regression(
             filt_405, filt_470,
             c=c, max_iter=max_iter, tol=irls_tol,
         )
+        slope, intercept = coeffs
         fitted_iso = slope * filt_405 + intercept
 
         # Guard: if fitted_iso crosses zero the dF/F division explodes.
-        # This happens when the 470/405 dynamic ranges diverge so much
-        # that the linear fit has a large negative intercept.
-        # TODO: fall back to Strategy B for these sessions instead of raising
         if np.any(fitted_iso <= 0):
             raise ValueError(
                 "IRLS fitted isosbestic crosses zero — dF/F is undefined. "

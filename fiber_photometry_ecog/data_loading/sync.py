@@ -36,6 +36,8 @@ class SyncResult:
     emg: Optional[np.ndarray]  # EMG signal, trimmed to overlap (None if not recorded)
     temperature_raw: np.ndarray # temperature signal, trimmed to overlap
     temp_bit_volts: float      # bit_volts factor for temperature conversion
+    temp_slope: float          # T(C) = slope * V(mV) + intercept (per-session)
+    temp_intercept: float      # per-session intercept (C)
     time: np.ndarray           # common time vector (seconds)
     fs: float                  # common sampling rate (ECoG rate)
     n_matched: int             # number of matched TTL pulses
@@ -223,6 +225,8 @@ def synchronize(
         emg=emg_common,
         temperature_raw=temp_common,
         temp_bit_volts=oep.temp_bit_volts,
+        temp_slope=oep.temp_slope,
+        temp_intercept=oep.temp_intercept,
         time=time_common,
         fs=output_fs,
         n_matched=len(matched_photo),

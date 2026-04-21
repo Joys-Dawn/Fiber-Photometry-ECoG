@@ -29,6 +29,8 @@ def _make_session() -> Session:
         emg=np.random.randn(n),
         temperature_raw=np.random.randn(n),
         temp_bit_volts=0.195,
+        temp_slope=0.0981,
+        temp_intercept=8.81,
         time=time,
         fs=fs,
     )

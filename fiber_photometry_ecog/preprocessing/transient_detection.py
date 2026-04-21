@@ -121,10 +121,17 @@ def _detect_wallace(
     height = config.min_height if config.min_height is not None else 0
     prom_threshold = config.min_prominence if config.min_prominence is not None else 0
 
-    # Step 1: height gate on z-scored signal (no MinPeakDistance — paper doesn't specify)
+    # Step 1: height gate on z-scored signal.
+    # Wallace 2025 doesn't specify MinPeakDistance, which caused ~11% of
+    # ITIs in WT baseline to be <100 ms (double-counting the same transient).
+    # A 0.3 s refractory lockout ≈ one jGCaMP8s decay half-time (307 ms,
+    # Zhang et al. 2023, Janelia cultured-neuron benchmark) eliminates all
+    # sub-100 ms ITIs with zero change to rate or amplitude distributions
+    # on this dataset (see diagnostics/strategy_c_sweep/).
     peaks, _ = find_peaks(
         zdff_hpf,
         height=height,
+        distance=max(1, int(0.3 * fs)),
     )
 
     if len(peaks) == 0:
@@ -135,6 +142,16 @@ def _detect_wallace(
     mask = prominences >= prom_threshold
     peaks = peaks[mask]
     prominences = prominences[mask]
+
+    # Step 3: drop peaks wider than max_width_s (matches Strategy A behavior;
+    # GCaMP/GRAB-NE transients wider than this are almost always slow drift,
+    # not real events).
+    if len(peaks) > 0:
+        max_width_samples = int(config.max_width_s * fs)
+        widths, _, _, _ = peak_widths(dff_raw, peaks, rel_height=0.5)
+        width_mask = widths <= max_width_samples
+        peaks = peaks[width_mask]
+        prominences = prominences[width_mask]
 
     properties = {"prominences": prominences}
     return _build_events(zdff_hpf, dff_raw, fs, peaks, properties, config, temperature,
@@ -187,7 +204,9 @@ def _build_events(
 
         temp_at_peak = None
         if temperature is not None and peak_idx < len(temperature):
-            temp_at_peak = float(temperature[peak_idx])
+            val = float(temperature[peak_idx])
+            if not np.isnan(val):
+                temp_at_peak = val
 
         events.append(TransientEvent(
             peak_time=peak_time,
