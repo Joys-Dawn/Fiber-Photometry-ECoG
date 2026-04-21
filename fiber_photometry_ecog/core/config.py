@@ -151,8 +151,11 @@ class AnalysisConfig:
     """Parameters for all Phase 4 analysis modules."""
     # Temperature binning (used by preictal_mean, preictal_transients, postictal)
     temp_bin_size: float = 1.0              # degrees C
-    # Triggered averages
+    # Triggered averages (ictal landmark: EEC, UEO, OFF, etc.)
     triggered_window_s: float = 30.0        # seconds each side of event
+    triggered_baseline_start_s: float = 5.0 # baseline begins this many seconds before event
+    triggered_baseline_end_s: float = 1.0   # baseline ends this many seconds before event
+    triggered_auc_end_s: float = 30.0       # AUC: 0 to this many seconds post-event
     # PSTH
     psth_bin_size_s: float = 10.0           # seconds per bin
     psth_window_s: float = 60.0             # seconds each side of UEO
@@ -163,3 +166,6 @@ class AnalysisConfig:
     preictal_temp_range: float = 10.0       # degrees C below seizure onset temp
     # Spike-triggered averages
     spike_triggered_window_s: float = 30.0  # seconds each side of spike
+    spike_triggered_baseline_start_s: float = 5.0  # baseline begins this many seconds before event
+    spike_triggered_baseline_end_s: float = 1.0    # baseline ends this many seconds before event
+    spike_triggered_auc_end_s: float = 5.0         # AUC integration window: 0 to this many seconds post-event

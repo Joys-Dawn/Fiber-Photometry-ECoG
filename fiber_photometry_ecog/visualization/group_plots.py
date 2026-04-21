@@ -672,10 +672,10 @@ def plot_spike_triggered(
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
-    # --- Zoomed companion figure: same STA, ±10s window ---
+    # --- Zoomed companion figure: same STA, matching AUC window ---
     fig_zoom, ax_zoom = plt.subplots(1, 1, figsize=(8, 5))
-    _draw_sta(ax_zoom, xlim=(-10, 10))
-    ax_zoom.set_title("Photometry STA — zoomed (±10s)")
+    _draw_sta(ax_zoom, xlim=(-5, 5))
+    ax_zoom.set_title("Photometry STA — zoomed (−5s to +5s)")
     fig_zoom.tight_layout()
     fig_zoom.savefig(os.path.join(output_dir, "spike_triggered_zoomed.png"), dpi=150)
     plt.close(fig_zoom)

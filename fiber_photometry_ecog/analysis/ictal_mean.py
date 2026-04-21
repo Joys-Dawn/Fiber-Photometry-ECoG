@@ -79,6 +79,9 @@ def _compute_triggered_average(
     sessions: List[Session],
     landmark_func,
     window_s: float,
+    bl_start_s: float,
+    bl_end_s: float,
+    auc_end_s: float,
 ) -> TriggeredAverage:
     """Compute event-triggered average across sessions for a given landmark."""
     traces = []
@@ -94,8 +97,14 @@ def _compute_triggered_average(
         trace = _extract_triggered_trace(signal, fs, event_idx, window_samples)
         if trace is None:
             continue
+
+        bl_lo = window_samples - int(round(bl_start_s * fs))
+        bl_hi = window_samples - int(round(bl_end_s * fs))
+        trace = trace - np.mean(trace[bl_lo:bl_hi])
         traces.append(trace)
-        auc = float(np.trapezoid(trace, dx=1.0 / fs))
+
+        auc_end_idx = window_samples + int(round(auc_end_s * fs))
+        auc = float(np.trapezoid(trace[window_samples:auc_end_idx], dx=1.0 / fs))
         aucs.append(auc)
 
     if not traces:
@@ -109,7 +118,6 @@ def _compute_triggered_average(
             per_session_traces=[],
         )
 
-    # All traces should be the same length (same fs, same window)
     trace_mat = np.array(traces)
     mean_trace = np.mean(trace_mat, axis=0)
     sem_trace = (np.std(trace_mat, axis=0, ddof=1) / np.sqrt(len(traces))
@@ -117,8 +125,10 @@ def _compute_triggered_average(
 
     fs = sessions[0].processed.fs
     n_samples = trace_mat.shape[1]
+    window_samples = int(round(window_s * fs))
     time_axis = np.linspace(-window_s, window_s, n_samples)
-    auc_mean = float(np.trapezoid(mean_trace, dx=1.0 / fs))
+    auc_end_idx = window_samples + int(round(auc_end_s * fs))
+    auc_mean = float(np.trapezoid(mean_trace[window_samples:auc_end_idx], dx=1.0 / fs))
 
     return TriggeredAverage(
         time_axis=time_axis,
@@ -188,7 +198,12 @@ def compute_ictal_mean(
 
     triggered = {}
     for name, func in landmarks.items():
-        triggered[name] = _compute_triggered_average(sessions, func, window_s)
+        triggered[name] = _compute_triggered_average(
+            sessions, func, window_s,
+            config.triggered_baseline_start_s,
+            config.triggered_baseline_end_s,
+            config.triggered_auc_end_s,
+        )
 
     sz_arr = np.array(sz_means)
     bl_arr = np.array(bl_means)

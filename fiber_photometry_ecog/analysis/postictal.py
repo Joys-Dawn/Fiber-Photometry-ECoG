@@ -84,7 +84,8 @@ def compute_postictal(
 
         # Final recording metrics
         final_time = float(time[-1])
-        final_temp_val = float(temperature[-1])
+        valid_temp = temperature[~np.isnan(temperature)]
+        final_temp_val = float(valid_temp[-1]) if len(valid_temp) > 0 else np.nan
         # Mean z-ΔF/F over last 30 seconds of recording
         n_final = min(int(30 * fs), len(signal))
         final_dff = float(np.mean(signal[-n_final:]))

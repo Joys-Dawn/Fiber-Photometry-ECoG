@@ -316,8 +316,8 @@ class TestIctalMean:
         config = AnalysisConfig(triggered_window_s=10.0)
         result = compute_ictal_mean([s], config)
         ta = result.triggered_averages["UEO"]
-        # Constant signal of 1.0 over 20s window → AUC ≈ 20.0
-        assert ta.auc == pytest.approx(20.0, rel=0.01)
+        # Constant signal → baseline-subtracted → AUC = 0.0
+        assert ta.auc == pytest.approx(0.0, abs=1e-10)
 
     def test_max_temp_triggered(self):
         s = _make_session(
@@ -395,22 +395,22 @@ class TestPostictal:
 # ---------------------------------------------------------------------------
 
 class TestSpikeTriggered:
-    def test_basic_sta_zero_centered(self):
+    def test_basic_sta_baseline_subtracted(self):
         s = _make_session(fs=100.0, duration_s=300.0, signal_value=1.0)
         spike_times = np.array([50.0, 100.0, 200.0])
-        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        config = AnalysisConfig(spike_triggered_window_s=5.0, spike_triggered_baseline_start_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
         sr = result.session_results[0]
         assert sr.n_spikes == 3
-        # Constant signal → zero-centered → mean trace all 0.0
+        # Constant signal → baseline-subtracted → mean trace all 0.0
         np.testing.assert_allclose(sr.mean_trace, 0.0)
 
-    def test_auc_zero_centered(self):
+    def test_auc_baseline_subtracted(self):
         s = _make_session(fs=100.0, duration_s=300.0, signal_value=2.0)
         spike_times = np.array([150.0])
-        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        config = AnalysisConfig(spike_triggered_window_s=5.0, spike_triggered_baseline_start_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
-        # Constant signal zero-centered → AUC = 0.0
+        # Constant signal baseline-subtracted → AUC = 0.0
         assert result.group_auc == pytest.approx(0.0, abs=1e-10)
 
     def test_nonconstant_sta(self):
@@ -420,15 +420,15 @@ class TestSpikeTriggered:
         step_idx = int(150.0 * 100.0)
         s.processed.photometry.dff_zscore[step_idx:] = 1.0
         spike_times = np.array([150.0])
-        config = AnalysisConfig(spike_triggered_window_s=5.0)
+        config = AnalysisConfig(spike_triggered_window_s=5.0, spike_triggered_baseline_start_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
         sr = result.session_results[0]
-        # At t=0 (spike), value is 1.0. Before: 0-1=-1. After: 1-1=0.
-        # mean_trace should be -1 before spike, 0 after
-        assert sr.mean_trace[0] == pytest.approx(-1.0)
-        assert sr.mean_trace[-1] == pytest.approx(0.0)
-        # AUC should be negative (more area below zero than above)
-        assert sr.auc < 0
+        # Baseline = mean of -5s to -1s before spike = 0.0
+        # Before spike: 0-0=0. After spike: 1-0=1.
+        assert sr.mean_trace[0] == pytest.approx(0.0)
+        assert sr.mean_trace[-1] == pytest.approx(1.0)
+        # AUC should be positive (signal rises after spike)
+        assert sr.auc > 0
 
     def test_edge_spikes_excluded(self):
         s = _make_session(fs=100.0, duration_s=300.0)

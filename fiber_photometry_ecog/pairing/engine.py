@@ -81,21 +81,14 @@ def compute_seizure_group_means(
         if lm.behavioral_onset_time is not None:
             beh_times.append(lm.behavioral_onset_time - heat_start)
 
-        # Look up temperatures at landmark times
-        if sess.processed is not None and sess.processed.temperature_smooth is not None:
-            temp_trace = sess.processed.temperature_smooth
-            fs = sess.processed.fs
-            if fs is not None:
-                eec_idx = int(lm.eec_time * fs)
-                ueo_idx = int(lm.ueo_time * fs)
-                if eec_idx < len(temp_trace):
-                    eec_temps.append(float(temp_trace[eec_idx]))
-                if ueo_idx < len(temp_trace):
-                    ueo_temps.append(float(temp_trace[ueo_idx]))
-                if lm.behavioral_onset_time is not None:
-                    beh_idx = int(lm.behavioral_onset_time * fs)
-                    if beh_idx < len(temp_trace):
-                        beh_temps.append(float(temp_trace[beh_idx]))
+        # Use pre-computed landmark temperatures (already NaN-filtered by
+        # pipeline.py — None means thermistor dropout at that time).
+        if lm.eec_temp is not None:
+            eec_temps.append(lm.eec_temp)
+        if lm.ueo_temp is not None:
+            ueo_temps.append(lm.ueo_temp)
+        if lm.behavioral_onset_time is not None and lm.behavioral_onset_temp is not None:
+            beh_temps.append(lm.behavioral_onset_temp)
 
     if not eec_times:
         raise ValueError("No valid seizure sessions with EEC/UEO/OFF landmarks found.")
@@ -153,7 +146,7 @@ def _find_first_time_at_temp(
     # Take the first sample closest to target_temp, unconditionally.
     # Matches temp_eq_times.m: find(min(abs(temp - target)),1,'first').
     diff = np.abs(heating - target_temp)
-    best_idx = int(np.argmin(diff))
+    best_idx = int(np.nanargmin(diff))
     return best_idx / fs
 
 
@@ -190,7 +183,7 @@ def assign_equivalents_temperature(
     fs = control_session.processed.fs
 
     # Truncate at max temp (heating phase only)
-    max_idx = int(np.argmax(temp_trace))
+    max_idx = int(np.nanargmax(temp_trace))
 
     eec_time = _find_first_time_at_temp(temp_trace, fs, group_means.mean_eec_temp, max_idx)
     ueo_time = _find_first_time_at_temp(temp_trace, fs, group_means.mean_ueo_temp, max_idx)

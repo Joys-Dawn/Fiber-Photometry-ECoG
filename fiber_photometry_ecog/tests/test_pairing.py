@@ -38,12 +38,18 @@ def _make_seizure_session(
 ):
     """Create a seizure Session with synthetic temperature data."""
     temp_trace = _make_temp_trace(fs, duration_s, base_temp, max_temp)
+    eec_temp = float(temp_trace[int(eec_time * fs)]) if eec_time is not None else None
+    ueo_temp = float(temp_trace[int(ueo_time * fs)]) if ueo_time is not None else None
+    beh_temp = float(temp_trace[int(beh_time * fs)]) if beh_time is not None else None
     landmarks = SessionLandmarks(
         heating_start_time=heat_start,
         eec_time=eec_time,
         ueo_time=ueo_time,
         behavioral_onset_time=beh_time,
         off_time=off_time,
+        eec_temp=eec_temp,
+        ueo_temp=ueo_temp,
+        behavioral_onset_temp=beh_temp,
     )
     processed = ProcessedData(
         temperature_smooth=temp_trace,

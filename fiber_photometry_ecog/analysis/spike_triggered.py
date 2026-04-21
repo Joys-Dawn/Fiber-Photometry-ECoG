@@ -3,9 +3,9 @@
 
 Align photometry and EEG signals to each detected interictal ECoG spike.
 Mean +/- SEM across spikes, +/-30s window.
-Photometry segments are zero-centered at spike onset.
+Photometry segments are baseline-subtracted (mean of pre-event window).
 EEG segments are polarity-aligned (flipped if spike peak is negative)
-and zero-centered at spike onset.
+and baseline-subtracted.
 AUC via trapezoidal method (photometry only).
 """
 
@@ -107,6 +107,10 @@ def compute_spike_triggered_average(
         config = AnalysisConfig()
 
     window_s = config.spike_triggered_window_s
+    fs0 = sessions[0].processed.fs
+    bl_start_samples = int(round(config.spike_triggered_baseline_start_s * fs0))
+    bl_end_samples = int(round(config.spike_triggered_baseline_end_s * fs0))
+    auc_end_samples = int(round(config.spike_triggered_auc_end_s * fs0))
     session_results = []
     all_phot_means = []
     all_eeg_means = []
@@ -128,23 +132,29 @@ def compute_spike_triggered_average(
             if ecog is not None and end > len(ecog):
                 continue
 
-            # Photometry: zero-center at spike onset
+            # Photometry: subtract pre-event baseline mean (-5s to -1s before spike)
             phot_seg = signal[start:end].copy()
-            phot_seg = phot_seg - phot_seg[window_samples]
+            bl_lo = window_samples - bl_start_samples
+            bl_hi = window_samples - bl_end_samples
+            phot_seg = phot_seg - np.mean(phot_seg[bl_lo:bl_hi])
             phot_traces.append(phot_seg)
 
-            # EEG: polarity-align then zero-center
+            # EEG: polarity-align then subtract pre-event baseline mean
             if ecog is not None:
                 eeg_seg = ecog[start:end].copy()
                 eeg_seg = _polarity_align_eeg(eeg_seg, window_samples, fs)
-                eeg_seg = eeg_seg - eeg_seg[window_samples]
+                eeg_seg = eeg_seg - np.mean(eeg_seg[bl_lo:bl_hi])
                 eeg_traces.append(eeg_seg)
 
         n_spikes = len(phot_traces)
 
         # Photometry stats
         mean_trace, sem_trace = _compute_mean_sem(phot_traces, n_out)
-        auc = float(np.trapezoid(mean_trace, dx=1.0 / fs)) if n_spikes > 0 else np.nan
+        if n_spikes > 0:
+            auc_slice = mean_trace[window_samples:window_samples + auc_end_samples]
+            auc = float(np.trapezoid(auc_slice, dx=1.0 / fs))
+        else:
+            auc = np.nan
 
         # EEG stats
         eeg_mean, eeg_sem = _compute_mean_sem(eeg_traces, n_out)
@@ -170,8 +180,11 @@ def compute_spike_triggered_average(
 
     # Photometry group
     group_mean, group_sem = _group_mean_sem(all_phot_means, n_out)
-    group_auc = (float(np.trapezoid(group_mean, dx=1.0 / fs))
-                 if not np.all(np.isnan(group_mean)) else np.nan)
+    if not np.all(np.isnan(group_mean)):
+        auc_slice = group_mean[window_samples:window_samples + auc_end_samples]
+        group_auc = float(np.trapezoid(auc_slice, dx=1.0 / fs))
+    else:
+        group_auc = np.nan
 
     # EEG group
     eeg_group_mean, eeg_group_sem = _group_mean_sem(all_eeg_means, n_out)
