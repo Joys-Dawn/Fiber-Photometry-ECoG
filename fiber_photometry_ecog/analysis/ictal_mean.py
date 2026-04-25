@@ -167,13 +167,20 @@ def compute_ictal_mean(
 
         i_ueo = time_to_index(ueo_t, fs)
         i_off = time_to_index(off_t, fs)
-        sz_mean = float(np.mean(signal[i_ueo:i_off]))
+        ictal_window = signal[i_ueo:i_off]
+        sz_mean = float(np.mean(ictal_window))
 
-        # Late heat mean (midpoint of heating to UEO)
-        i_mid = (i_heat + i_ueo) // 2
-        late_heat_mean = float(np.mean(signal[i_mid:i_ueo]))
+        # Late heat mean: fixed 10s window before UEO
+        end_late_n = min(int(10.0 * fs), i_ueo - i_heat)
+        late_heat_mean = float(np.mean(signal[i_ueo - end_late_n:i_ueo]))
 
-        delta = sz_mean - late_heat_mean
+        # Delta: peak deflection (whichever extreme is farther from late-heat mean)
+        ictal_max = float(np.max(ictal_window))
+        ictal_min = float(np.min(ictal_window))
+        if abs(ictal_max - late_heat_mean) >= abs(ictal_min - late_heat_mean):
+            delta = ictal_max - late_heat_mean
+        else:
+            delta = ictal_min - late_heat_mean
 
         session_results.append(IctalMeanSessionResult(
             mouse_id=s.mouse_id,
@@ -218,4 +225,17 @@ def compute_ictal_mean(
         delta_mean=float(np.mean(d_arr)),
         delta_sem=compute_sem(d_arr),
         triggered_averages=triggered,
+    )
+
+
+def compute_wide_ueo_triggered(
+    sessions: List[Session],
+    window_s: float = 150.0,
+    bl_start_s: float = 5.0,
+    bl_end_s: float = 1.0,
+    auc_end_s: float = 60.0,
+) -> TriggeredAverage:
+    """Wide-window UEO triggered average for per-cohort visualization."""
+    return _compute_triggered_average(
+        sessions, get_ueo_time, window_s, bl_start_s, bl_end_s, auc_end_s
     )

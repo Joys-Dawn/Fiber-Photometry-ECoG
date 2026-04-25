@@ -18,7 +18,7 @@ from ..analysis.cohort_characteristics import CohortGroupResult as CohortResult
 from ..analysis.baseline_transients import BaselineTransientGroupResult
 from ..analysis.preictal_mean import PreictalMeanGroupResult
 from ..analysis.preictal_transients import PreictalTransientGroupResult
-from ..analysis.ictal_mean import IctalMeanGroupResult
+from ..analysis.ictal_mean import IctalMeanGroupResult, TriggeredAverage
 from ..analysis.ictal_transients import IctalTransientGroupResult
 from ..analysis.postictal import PostictalGroupResult
 from ..analysis.spike_triggered import SpikeTriggeredGroupResult
@@ -187,7 +187,7 @@ def plot_baseline_transients(
 
     _scatter_mean_sem(axes[0], freq, "Frequency (Hz)")
     axes[0].set_title("Transient Frequency")
-    _scatter_mean_sem(axes[1], amp, "Amplitude (ΔF/F)")
+    _scatter_mean_sem(axes[1], amp, "Amplitude (z-ΔF/F)")
     axes[1].set_title("Transient Amplitude")
     _scatter_mean_sem(axes[2], hw, "Half-width (s)")
     axes[2].set_title("Transient Half-width")
@@ -212,24 +212,31 @@ def plot_preictal_mean(
     results: Dict[str, PreictalMeanGroupResult],
     output_dir: str,
 ) -> str:
-    """Row 8: time-binned bars {early heat, late heat} (baseline omitted —
-        z-scored to baseline so it is identically 0 by construction).
-    Row 9: end-of-late-heat scatter (separate plot).
-    Row 10: temp-binned signal during heating, rel to seizure onset temp.
+    """Panel 0: consolidated heating bar. Panel 1: split (early/late heat) bars.
+    Panel 2: end-of-late-heat scatter. Panel 3: temp-binned signal.
     """
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
 
     csv_rows = []
     for name, r in results.items():
         for s in r.session_results:
             csv_rows.append([name, s.mouse_id, s.heating_session,
                              s.baseline_mean, s.early_heat_mean,
-                             s.late_heat_mean, s.end_late_heat_mean])
+                             s.late_heat_mean, s.end_late_heat_mean,
+                             s.heating_mean])
 
-    # Row 8: time-binned bars (early heat + late heat; baseline = 0 by definition)
-    ax = axes[0]
+    # Panel 0: consolidated heating bar
+    heat_data = {}
+    for name, r in results.items():
+        vals = [s.heating_mean for s in r.session_results]
+        heat_data[name] = (vals, r.heating_mean, r.heating_sem)
+    _scatter_mean_sem(axes[0], heat_data, "Mean z-ΔF/F")
+    axes[0].set_title("Heating (consolidated)")
+
+    # Panel 1: split (early heat + late heat; baseline = 0 by definition)
+    ax = axes[1]
     labels = ["Early Heat", "Late Heat"]
     x = np.arange(len(labels))
     width = 0.8 / max(len(results), 1)
@@ -247,16 +254,16 @@ def plot_preictal_mean(
     ax.legend(fontsize=7)
     ax.spines[["right", "top"]].set_visible(False)
 
-    # Row 9: end of late heat scatter
+    # Panel 2: end of late heat scatter
     elh = {}
     for name, r in results.items():
         vals = [s.end_late_heat_mean for s in r.session_results]
         elh[name] = (vals, r.end_late_heat_mean, r.end_late_heat_sem)
-    _scatter_mean_sem(axes[1], elh, "Mean z-ΔF/F")
-    axes[1].set_title("End of Late Heat")
+    _scatter_mean_sem(axes[2], elh, "Mean z-ΔF/F")
+    axes[2].set_title("End of Late Heat")
 
-    # Row 10: temp-binned during heating, rel to seizure onset temp
-    ax = axes[2]
+    # Panel 3: temp-binned during heating, rel to seizure onset temp
+    ax = axes[3]
     for name, r in results.items():
         _line_sem(ax, r.temp_bin_centers, r.temp_bin_group_mean,
                   r.temp_bin_group_sem, _color(name), name)
@@ -275,7 +282,7 @@ def plot_preictal_mean(
         os.path.join(output_dir, "preictal_mean.csv"),
         ["cohort", "mouse_id", "heating_session",
          "baseline_mean", "early_heat_mean",
-         "late_heat_mean", "end_late_heat_mean"],
+         "late_heat_mean", "end_late_heat_mean", "heating_mean"],
         csv_rows,
     )
     return path
@@ -304,7 +311,7 @@ def plot_preictal_transients(
         _line_sem(axes[0, 2], r.temp_ma_centers, r.temp_ma_hw_mean, r.temp_ma_hw_sem, c, name)
     axes[0, 0].set_ylabel("Frequency (Hz)")
     axes[0, 0].set_title("Temp Moving Avg — Frequency")
-    axes[0, 1].set_ylabel("Amplitude (ΔF/F)")
+    axes[0, 1].set_ylabel("Amplitude (z-ΔF/F)")
     axes[0, 1].set_title("Temp Moving Avg — Amplitude")
     axes[0, 2].set_ylabel("Half-width (s)")
     axes[0, 2].set_title("Temp Moving Avg — Half-width")
@@ -321,7 +328,7 @@ def plot_preictal_transients(
         _line_sem(axes[1, 2], r.temp_bin_centers, r.temp_hw_mean, r.temp_hw_sem, c, name)
     axes[1, 0].set_ylabel("Frequency (count)")
     axes[1, 0].set_title("Temp-binned (1°C) — Frequency")
-    axes[1, 1].set_ylabel("Amplitude (ΔF/F)")
+    axes[1, 1].set_ylabel("Amplitude (z-ΔF/F)")
     axes[1, 1].set_title("Temp-binned (1°C) — Amplitude")
     axes[1, 2].set_ylabel("Half-width (s)")
     axes[1, 2].set_title("Temp-binned (1°C) — Half-width")
@@ -338,7 +345,7 @@ def plot_preictal_transients(
         _line_sem(axes[2, 2], r.moving_avg_times, r.half_width_mean, r.half_width_sem, c, name)
     axes[2, 0].set_ylabel("Frequency (Hz)")
     axes[2, 0].set_title("Time Moving Avg — Frequency")
-    axes[2, 1].set_ylabel("Amplitude (ΔF/F)")
+    axes[2, 1].set_ylabel("Amplitude (z-ΔF/F)")
     axes[2, 1].set_title("Time Moving Avg — Amplitude")
     axes[2, 2].set_ylabel("Half-width (s)")
     axes[2, 2].set_title("Time Moving Avg — Half-width")
@@ -425,6 +432,7 @@ def plot_ictal_mean(
         ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("z-ΔF/F")
+        ax.set_xlim(-5, 65)
         ax.set_title(f"Triggered Avg — {lm}")
         ax.legend(fontsize=7)
         ax.spines[["right", "top"]].set_visible(False)
@@ -490,11 +498,17 @@ def plot_ictal_transients(
     first_centers = next(iter(results.values())).psth_bin_centers
     bin_step = float(first_centers[1] - first_centers[0]) if len(first_centers) > 1 else 1.0
     width = (bin_step * 0.8) / n_groups
+    rng = np.random.default_rng(42)
     for i, (name, r) in enumerate(results.items()):
         x = r.psth_bin_centers
         offset = (i - (n_groups - 1) / 2) * width
         ax.bar(x + offset, r.psth_mean, width, yerr=r.psth_sem,
-               color=_color(name), alpha=0.7, capsize=2, label=name)
+               color=_color(name), alpha=0.35, capsize=2, label=name)
+        if r.per_session_psth_freq:
+            for sess_freq in r.per_session_psth_freq:
+                jitter = rng.uniform(-width * 0.3, width * 0.3, len(x))
+                ax.scatter(x + offset + jitter, sess_freq,
+                           color=_color(name), s=8, alpha=0.6, zorder=3, edgecolor='none')
     ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("Time rel. to UEO (s)")
     ax.set_ylabel("Frequency (Hz)")
@@ -512,7 +526,7 @@ def plot_ictal_transients(
     axes[0, 1].set_title("Moving Avg — Frequency")
     axes[0, 1].set_ylabel("Frequency (Hz)")
     axes[1, 0].set_title("Moving Avg — Amplitude")
-    axes[1, 0].set_ylabel("Amplitude (ΔF/F)")
+    axes[1, 0].set_ylabel("Amplitude (z-ΔF/F)")
     axes[1, 1].set_title("Moving Avg — Half-width")
     axes[1, 1].set_ylabel("Half-width (s)")
     for ax in [axes[0, 1], axes[1, 0], axes[1, 1]]:
@@ -567,9 +581,9 @@ def plot_postictal(
     for name, r in results.items():
         ax.scatter(r.final_times, r.final_temps, color=_color(name), label=name,
                    s=30, edgecolor="black", linewidth=0.3)
-    ax.set_xlabel("Final Recording Time (s)")
+    ax.set_xlabel("Post-Seizure Time (s)")
     ax.set_ylabel("Final Temp (°C)")
-    ax.set_title("Final Time vs Temp")
+    ax.set_title("Post-Seizure Time vs Temp")
     ax.legend(fontsize=7)
     ax.spines[["right", "top"]].set_visible(False)
 
@@ -578,9 +592,9 @@ def plot_postictal(
     for name, r in results.items():
         ax.scatter(r.final_times, r.final_dffs, color=_color(name), label=name,
                    s=30, edgecolor="black", linewidth=0.3)
-    ax.set_xlabel("Final Recording Time (s)")
+    ax.set_xlabel("Post-Seizure Time (s)")
     ax.set_ylabel("Final Mean z-ΔF/F")
-    ax.set_title("Final Time vs ΔF/F")
+    ax.set_title("Post-Seizure Time vs ΔF/F")
     ax.legend(fontsize=7)
     ax.spines[["right", "top"]].set_visible(False)
 
@@ -674,8 +688,8 @@ def plot_spike_triggered(
 
     # --- Zoomed companion figure: same STA, matching AUC window ---
     fig_zoom, ax_zoom = plt.subplots(1, 1, figsize=(8, 5))
-    _draw_sta(ax_zoom, xlim=(-5, 5))
-    ax_zoom.set_title("Photometry STA — zoomed (−5s to +5s)")
+    _draw_sta(ax_zoom, xlim=(-2, 10))
+    ax_zoom.set_title("Photometry STA — zoomed (−2s to +10s)")
     fig_zoom.tight_layout()
     fig_zoom.savefig(os.path.join(output_dir, "spike_triggered_zoomed.png"), dpi=150)
     plt.close(fig_zoom)
@@ -685,4 +699,36 @@ def plot_spike_triggered(
         ["cohort", "mouse_id", "heating_session", "n_spikes", "auc"],
         csv_rows,
     )
+    return path
+
+
+# ---- 9. Per-cohort UEO-aligned mean trace ----
+
+def plot_ueo_per_cohort(
+    results: Dict[str, TriggeredAverage],
+    output_dir: str,
+) -> str:
+    """Wide-window (±150s) UEO-triggered mean trace, one panel per cohort."""
+    os.makedirs(output_dir, exist_ok=True)
+    results = _ordered(results)
+    n = max(len(results), 1)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 5), squeeze=False)
+
+    for i, (name, ta) in enumerate(results.items()):
+        ax = axes[0, i]
+        color = _color(name)
+        ci95 = 1.96 * ta.sem_trace
+        ax.plot(ta.time_axis, ta.mean_trace, color=color)
+        ax.fill_between(ta.time_axis, ta.mean_trace - ci95,
+                        ta.mean_trace + ci95, color=color, alpha=0.25)
+        ax.axvline(0, color="black", linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Time rel. to UEO (s)")
+        ax.set_ylabel("z-ΔF/F")
+        ax.set_title(f"{name} — UEO ±150s (mean ± 95% CI)")
+        ax.spines[["right", "top"]].set_visible(False)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "ueo_per_cohort.png")
+    fig.savefig(path, dpi=150)
+    plt.close("all")
     return path

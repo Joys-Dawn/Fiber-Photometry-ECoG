@@ -14,6 +14,7 @@ import numpy as np
 from ..core.config import AnalysisConfig
 from ..core.data_models import Session
 from ._helpers import (
+    get_off_time,
     get_signal_and_time,
     get_temperature,
     compute_sem,
@@ -52,6 +53,8 @@ def compute_postictal(
     if config is None:
         config = AnalysisConfig()
 
+    sessions = [s for s in sessions if s.include_for_baseline]
+
     bin_size = config.temp_bin_size
     # Bins from -range to 0, relative to seizure onset temp
     bin_edges = np.arange(-config.preictal_temp_range, bin_size, bin_size)
@@ -82,8 +85,9 @@ def compute_postictal(
         cooling_binned = bin_signal_by_temperature(cool_signal, cool_temp_rel, bin_edges)
         all_cooling.append(cooling_binned)
 
-        # Final recording metrics
-        final_time = float(time[-1])
+        # Final recording metrics (post-seizure time)
+        off_t = get_off_time(s)
+        final_time = float(time[-1]) - off_t
         valid_temp = temperature[~np.isnan(temperature)]
         final_temp_val = float(valid_temp[-1]) if len(valid_temp) > 0 else np.nan
         # Mean z-ΔF/F over last 30 seconds of recording

@@ -136,7 +136,7 @@ def _find_first_time_at_temp(
         return None
 
     if max_idx is None:
-        max_idx = int(np.argmax(temperature_trace))
+        max_idx = int(np.nanargmax(temperature_trace))
 
     # Only search the heating phase
     heating = temperature_trace[:max_idx + 1]

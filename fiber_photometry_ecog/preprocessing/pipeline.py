@@ -67,6 +67,10 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         idx = min(int(round(session.landmarks.ueo_time * fs)), len(temp_result.temperature_smooth) - 1)
         val = float(temp_result.temperature_smooth[idx])
         session.landmarks.ueo_temp = None if np.isnan(val) else val
+    if session.landmarks.behavioral_onset_time is not None:
+        idx = min(int(round(session.landmarks.behavioral_onset_time * fs)), len(temp_result.temperature_smooth) - 1)
+        val = float(temp_result.temperature_smooth[idx])
+        session.landmarks.behavioral_onset_temp = None if np.isnan(val) else val
 
     # --- ECoG ---
     ecog_filt = filter_ecog(raw.ecog, fs, config.ecog)
@@ -80,7 +84,10 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         phot_result.dff, fs, session.landmarks.heating_start_time)
 
     # Transient stream: detrend, then baseline z-score
-    if strategy_name == "A":
+    if not config.photometry.apply_hpf:
+        phot_result.dff_hpf = None
+        dff_for_detection = phot_result.dff
+    elif strategy_name == "A":
         # Strategy A: HPF then baseline z-score (PASTa/Donka 2025)
         dff_hpf_raw = highpass_filter(phot_result.dff, fs)
         phot_result.dff_hpf = z_score_baseline(
@@ -113,10 +120,13 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         TRANSIENT_CONFIGS[strategy_name],
         temp_result.temperature_smooth)
 
-    # --- Spike detection ---
+    # --- Spike detection (pre-ictal only: cut 10s before seizure/equivalent) ---
     exclusion_zones = []
-    if session.landmarks.ueo_time is not None and session.landmarks.off_time is not None:
-        exclusion_zones.append((session.landmarks.ueo_time, session.landmarks.off_time))
+    ueo_t = session.landmarks.ueo_time
+    if ueo_t is None:
+        ueo_t = getattr(session.landmarks, 'equiv_ueo_time', None)
+    if ueo_t is not None:
+        exclusion_zones.append((ueo_t - 10.0, float('inf')))
     session.spikes = detect_spikes(
         ecog_filt, fs, session.landmarks.heating_start_time, config.spike_detection,
         exclusion_zones=exclusion_zones if exclusion_zones else None)

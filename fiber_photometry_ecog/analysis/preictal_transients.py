@@ -88,7 +88,8 @@ def _sliding_window_transients(
         duration = w_end - w_start
         freq = len(w_trans) / duration if duration > 0 else 0.0
         if len(w_trans) > 0:
-            amp = float(np.mean([t.peak_to_trough for t in w_trans]))
+            amp = float(np.mean([t.z_peak_to_trough if t.z_peak_to_trough is not None
+                                else t.peak_to_trough for t in w_trans]))
             hw = float(np.mean([t.half_width for t in w_trans]))
         else:
             amp = 0.0
@@ -150,7 +151,8 @@ def _sliding_window_transients_by_temp(
         if time_in_window_s > 0:
             freqs[i] = len(in_window) / time_in_window_s
         if in_window:
-            amps[i] = float(np.mean([t.peak_to_trough for t in in_window]))
+            amps[i] = float(np.mean([t.z_peak_to_trough if t.z_peak_to_trough is not None
+                                     else t.peak_to_trough for t in in_window]))
             hws[i] = float(np.mean([t.half_width for t in in_window]))
         else:
             amps[i] = np.nan
@@ -181,7 +183,8 @@ def _bin_transients_by_temperature(
         idx = np.searchsorted(bin_edges, rel_temp, side='right') - 1
         if 0 <= idx < n_bins:
             counts[idx] += 1
-            amp_sums[idx] += t.peak_to_trough
+            amp_sums[idx] += (t.z_peak_to_trough if t.z_peak_to_trough is not None
+                             else t.peak_to_trough)
             hw_sums[idx] += t.half_width
 
     freq = counts
@@ -197,6 +200,8 @@ def compute_preictal_transients(
     """Compute pre-ictal transient metrics for a group of sessions."""
     if config is None:
         config = AnalysisConfig()
+
+    sessions = [s for s in sessions if s.include_for_transients]
 
     bin_size = config.temp_bin_size
     temp_range = config.preictal_temp_range

@@ -33,6 +33,7 @@ class IctalTransientGroupResult:
     psth_bin_centers: np.ndarray
     psth_mean: np.ndarray           # mean frequency (Hz) across sessions
     psth_sem: np.ndarray
+    per_session_psth_freq: list      # List[np.ndarray], per-session freq for scatter overlay
     # Moving average around UEO
     moving_avg_times: np.ndarray    # seconds relative to UEO
     freq_mean: np.ndarray
@@ -50,6 +51,8 @@ def compute_ictal_transients(
     """Compute ictal transient metrics for a group of sessions."""
     if config is None:
         config = AnalysisConfig()
+
+    sessions = [s for s in sessions if s.include_for_transients]
 
     bin_size = config.psth_bin_size_s
     window = config.psth_window_s
@@ -98,7 +101,8 @@ def compute_ictal_transients(
             freq = len(w_trans) / ma_window if ma_window > 0 else 0.0
             freqs.append(freq)
             if len(w_trans) > 0:
-                amps.append(float(np.mean([t.peak_to_trough for t in w_trans])))
+                amps.append(float(np.mean([t.z_peak_to_trough if t.z_peak_to_trough is not None
+                                          else t.peak_to_trough for t in w_trans])))
                 hws.append(float(np.mean([t.half_width for t in w_trans])))
             else:
                 amps.append(0.0)
@@ -111,6 +115,7 @@ def compute_ictal_transients(
     # Group PSTH — spec calls for frequency (Hz), so divide counts by bin width
     count_mat = np.array(all_counts)
     freq_mat = count_mat / bin_size
+    per_session_psth_freq = [freq_mat[i] for i in range(freq_mat.shape[0])]
     psth_mean = np.mean(freq_mat, axis=0)
     psth_sem = (np.std(freq_mat, axis=0, ddof=1) / np.sqrt(len(sessions))
                 if len(sessions) > 1 else np.zeros(len(bin_centers)))
@@ -132,6 +137,7 @@ def compute_ictal_transients(
         psth_bin_centers=bin_centers,
         psth_mean=psth_mean,
         psth_sem=psth_sem,
+        per_session_psth_freq=per_session_psth_freq,
         moving_avg_times=ma_centers,
         freq_mean=freq_mean,
         freq_sem=freq_sem,

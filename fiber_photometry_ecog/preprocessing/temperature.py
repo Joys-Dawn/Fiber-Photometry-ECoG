@@ -63,10 +63,12 @@ def process_temperature(
     # Linear calibration (per-session slope/intercept)
     temperature_c = slope * voltage_mv + intercept
 
-    # Moving average smoothing
+    # Moving average smoothing (reflect-pad edges to avoid zero-pad artifacts)
     if config.smoothing_window > 1 and len(temperature_c) >= config.smoothing_window:
         kernel = np.ones(config.smoothing_window) / config.smoothing_window
-        temperature_smooth = np.convolve(temperature_c, kernel, mode="same")
+        half = config.smoothing_window // 2
+        padded = np.pad(temperature_c, half, mode="reflect")
+        temperature_smooth = np.convolve(padded, kernel, mode="valid")[:len(temperature_c)]
     else:
         temperature_smooth = temperature_c.copy()
 

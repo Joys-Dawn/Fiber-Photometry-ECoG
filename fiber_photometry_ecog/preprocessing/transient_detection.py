@@ -46,6 +46,9 @@ def detect_transients(
     -------
     List of TransientEvent, sorted by peak_time.
     """
+    if zdff_hpf is None:
+        return []
+
     if config is None:
         config = TransientConfig()
 
@@ -199,6 +202,10 @@ def _build_events(
         right = min(len(dff_raw), peak_idx + trough_window)
         trough_amp = float(np.min(dff_raw[left:right]))
 
+        # Z-scored amplitude (on zdff_hpf)
+        z_peak_amp = float(zdff_hpf[peak_idx])
+        z_trough_amp = float(np.min(zdff_hpf[left:right]))
+
         half_w = float(widths[i] / fs) if i < len(widths) else 0.0
         prom = float(prominences[i]) if i < len(prominences) else 0.0
 
@@ -216,6 +223,9 @@ def _build_events(
             half_width=half_w,
             prominence=prom,
             temperature_at_peak=temp_at_peak,
+            z_peak_amplitude=z_peak_amp,
+            z_trough_amplitude=z_trough_amp,
+            z_peak_to_trough=z_peak_amp - z_trough_amp,
         ))
 
     return events

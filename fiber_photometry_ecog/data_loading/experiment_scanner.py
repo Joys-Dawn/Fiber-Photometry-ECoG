@@ -254,6 +254,9 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     eec_col = _find_col(cols, ["eec", "time"], forbidden=["equivalent", "temp"])
     ueo_col = _find_col(cols, ["ueo", "time"], forbidden=["equivalent", "temp"])
     off_col = _find_col(cols, ["off", "time"], forbidden=["equivalent", "temp"])
+    include_baseline_col = _find_col(cols, ["include", "baseline"])
+    include_transients_col = _find_col(cols, ["include", "transient"])
+    prominence_col = _find_col(cols, ["prominence"])
 
     if mouse_col is None:
         logger.warning("Data log has no recognizable 'mouse' column: %s", log_path.name)
@@ -348,6 +351,27 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
         temp_ch = _parse_int(temp_ch_col)
         heating_session = _parse_int(session_col) or 1
 
+        include_for_baseline = True
+        if include_baseline_col:
+            v = _parse_bool(row.get(include_baseline_col))
+            if v is not None:
+                include_for_baseline = v
+
+        include_for_transients = True
+        if include_transients_col:
+            v = _parse_bool(row.get(include_transients_col))
+            if v is not None:
+                include_for_transients = v
+
+        transient_prominence = None
+        if prominence_col:
+            v = row.get(prominence_col)
+            if v is not None and not (isinstance(v, float) and pd.isna(v)):
+                try:
+                    transient_prominence = float(v)
+                except (ValueError, TypeError):
+                    pass
+
         lookup[(mouse, date_str)] = {
             "genotype": genotype,
             "seizure": seizure,
@@ -363,5 +387,8 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
             "eec_time": eec_time,
             "ueo_time": ueo_time,
             "off_time": off_time,
+            "include_for_baseline": include_for_baseline,
+            "include_for_transients": include_for_transients,
+            "transient_prominence": transient_prominence,
         }
     return lookup

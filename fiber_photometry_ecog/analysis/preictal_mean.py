@@ -33,6 +33,7 @@ class PreictalMeanSessionResult:
     early_heat_mean: float
     late_heat_mean: float
     end_late_heat_mean: float
+    heating_mean: float                 # consolidated: entire heating period
     temp_bin_centers: np.ndarray        # degrees C relative to seizure onset temp
     temp_bin_means: np.ndarray          # mean z-ΔF/F per bin
 
@@ -48,6 +49,8 @@ class PreictalMeanGroupResult:
     late_heat_sem: float
     end_late_heat_mean: float
     end_late_heat_sem: float
+    heating_mean: float
+    heating_sem: float
     temp_bin_centers: np.ndarray
     temp_bin_group_mean: np.ndarray     # mean across sessions per bin
     temp_bin_group_sem: np.ndarray      # SEM across sessions per bin
@@ -61,11 +64,14 @@ def compute_preictal_mean(
     if config is None:
         config = AnalysisConfig()
 
+    sessions = [s for s in sessions if s.include_for_baseline]
+
     session_results = []
     bl_means = []
     eh_means = []
     lh_means = []
     elh_means = []
+    heat_means = []
 
     # Determine temperature bin edges: from -preictal_temp_range to 0 relative to UEO temp
     bin_size = config.temp_bin_size
@@ -92,14 +98,16 @@ def compute_preictal_mean(
         bl_mean = float(np.mean(signal[:i_heat]))
         eh_mean = float(np.mean(signal[i_heat:i_mid]))
         lh_mean = float(np.mean(signal[i_mid:i_ueo]))
-        # End of late heat: last 10% of heating period before UEO
-        late_window = max(1, int(0.1 * (i_ueo - i_heat)))
-        elh_mean = float(np.mean(signal[i_ueo - late_window:i_ueo]))
+        heating_mean = float(np.mean(signal[i_heat:i_ueo]))
+        # End of late heat: fixed 10s window before UEO
+        end_late_n = min(int(10.0 * fs), i_ueo - i_heat)
+        elh_mean = float(np.mean(signal[i_ueo - end_late_n:i_ueo]))
 
         bl_means.append(bl_mean)
         eh_means.append(eh_mean)
         lh_means.append(lh_mean)
         elh_means.append(elh_mean)
+        heat_means.append(heating_mean)
 
         # Temperature-binned: heating portion, relative to seizure onset temp
         heat_signal = signal[i_heat:i_ueo]
@@ -115,6 +123,7 @@ def compute_preictal_mean(
             early_heat_mean=eh_mean,
             late_heat_mean=lh_mean,
             end_late_heat_mean=elh_mean,
+            heating_mean=heating_mean,
             temp_bin_centers=bin_centers.copy(),
             temp_bin_means=temp_bin_vals,
         ))
@@ -124,6 +133,7 @@ def compute_preictal_mean(
     eh_arr = np.array(eh_means)
     lh_arr = np.array(lh_means)
     elh_arr = np.array(elh_means)
+    heat_arr = np.array(heat_means)
 
     temp_mat = np.array(all_temp_bins)  # (n_sessions, n_bins)
     temp_group_mean = np.nanmean(temp_mat, axis=0)
@@ -144,6 +154,8 @@ def compute_preictal_mean(
         late_heat_sem=compute_sem(lh_arr),
         end_late_heat_mean=float(np.mean(elh_arr)),
         end_late_heat_sem=compute_sem(elh_arr),
+        heating_mean=float(np.mean(heat_arr)),
+        heating_sem=compute_sem(heat_arr),
         temp_bin_centers=bin_centers,
         temp_bin_group_mean=temp_group_mean,
         temp_bin_group_sem=temp_group_sem,

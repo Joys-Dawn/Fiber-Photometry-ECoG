@@ -22,7 +22,7 @@ class ECoGConfig:
 @dataclass
 class PhotometryConfig:
     """Photometry preprocessing parameters (shared across strategies)."""
-    strategy: str = "A"             # "A" (Chandni), "B" (Meiling), "C" (IRLS)
+    strategy: str = "C"             # "A" (Chandni), "B" (Meiling), "C" (IRLS)
 
     # Strategy A: Gaussian smoothing
     gaussian_sigma: int = 75        # samples
@@ -46,6 +46,7 @@ class PhotometryConfig:
     hpf_order: int = 2             # Butterworth order
     # Strategy B/C detrending: moving-average subtraction (per Wallace 2025)
     detrend_window_s: float = 100.0  # seconds; moving-average window
+    apply_hpf: bool = True           # False to skip HPF/detrend (no transient stream)
 
 
 @dataclass
@@ -152,10 +153,10 @@ class AnalysisConfig:
     # Temperature binning (used by preictal_mean, preictal_transients, postictal)
     temp_bin_size: float = 1.0              # degrees C
     # Triggered averages (ictal landmark: EEC, UEO, OFF, etc.)
-    triggered_window_s: float = 30.0        # seconds each side of event
+    triggered_window_s: float = 65.0        # seconds each side of event
     triggered_baseline_start_s: float = 5.0 # baseline begins this many seconds before event
     triggered_baseline_end_s: float = 1.0   # baseline ends this many seconds before event
-    triggered_auc_end_s: float = 30.0       # AUC: 0 to this many seconds post-event
+    triggered_auc_end_s: float = 60.0       # AUC: 0 to this many seconds post-event
     # PSTH
     psth_bin_size_s: float = 10.0           # seconds per bin
     psth_window_s: float = 60.0             # seconds each side of UEO
@@ -168,4 +169,5 @@ class AnalysisConfig:
     spike_triggered_window_s: float = 30.0  # seconds each side of spike
     spike_triggered_baseline_start_s: float = 5.0  # baseline begins this many seconds before event
     spike_triggered_baseline_end_s: float = 1.0    # baseline ends this many seconds before event
-    spike_triggered_auc_end_s: float = 5.0         # AUC integration window: 0 to this many seconds post-event
+    spike_triggered_auc_end_s: float = 10.0         # AUC integration window: 0 to this many seconds post-event
+    wide_triggered_window_s: float = 150.0          # per-cohort UEO plot (seconds each side)

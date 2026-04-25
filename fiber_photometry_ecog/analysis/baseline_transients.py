@@ -43,6 +43,8 @@ def compute_baseline_transients(
     config: AnalysisConfig | None = None,
 ) -> BaselineTransientGroupResult:
     """Compute baseline transient metrics for a group of sessions."""
+    sessions = [s for s in sessions if s.include_for_baseline]
+
     session_results = []
     freqs = []
     amps = []
@@ -59,7 +61,9 @@ def compute_baseline_transients(
         freq = n / duration if duration > 0 else 0.0
 
         if n > 0:
-            mean_amp = float(np.mean([t.peak_to_trough for t in bl_transients]))
+            mean_amp = float(np.mean([
+                t.z_peak_to_trough if t.z_peak_to_trough is not None else t.peak_to_trough
+                for t in bl_transients]))
             mean_hw = float(np.mean([t.half_width for t in bl_transients]))
         else:
             mean_amp = 0.0

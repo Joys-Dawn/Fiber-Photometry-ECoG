@@ -51,6 +51,9 @@ class TransientEvent:
     half_width: float                       # seconds, at 50% prominence
     prominence: float                       # scipy prominence value
     temperature_at_peak: Optional[float] = None  # degrees C, cross-referenced
+    z_peak_amplitude: Optional[float] = None     # z-scored HPF signal at peak
+    z_trough_amplitude: Optional[float] = None   # z-scored HPF min in trough window
+    z_peak_to_trough: Optional[float] = None     # z_peak - z_trough
 
 
 @dataclass
@@ -107,6 +110,9 @@ class Session:
     sudep: bool = False                    # Sudden Unexpected Death in Epilepsy
     include_session: bool = True            # whether to include in analysis
     exclusion_reason: Optional[str] = None  # if include_session=False, why
+    include_for_baseline: bool = True
+    include_for_transients: bool = True
+    transient_prominence: Optional[float] = None
     experiment_label: str = ""              # e.g. "GCaMP / mPFC / PV"
     landmarks: Optional[SessionLandmarks] = None
     preprocessing_config: PreprocessingConfig = field(default_factory=PreprocessingConfig)

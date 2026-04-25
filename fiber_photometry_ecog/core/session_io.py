@@ -101,6 +101,9 @@ def save_session(session: Session, sessions_dir: Path) -> Path:
         "cohort": session.cohort,
         "date": session.date,
         "session_name": session.session_name,
+        "include_for_baseline": session.include_for_baseline,
+        "include_for_transients": session.include_for_transients,
+        "transient_prominence": session.transient_prominence,
         "raw_fs": raw.fs if raw else None,
         "raw_temp_bit_volts": raw.temp_bit_volts if raw else None,
         "raw_temp_slope": raw.temp_slope if raw else None,
@@ -121,7 +124,10 @@ def save_session(session: Session, sessions_dir: Path) -> Path:
         {"peak_time": t.peak_time, "peak_amplitude": t.peak_amplitude,
          "trough_amplitude": t.trough_amplitude, "peak_to_trough": t.peak_to_trough,
          "half_width": t.half_width, "prominence": t.prominence,
-         "temperature_at_peak": t.temperature_at_peak}
+         "temperature_at_peak": t.temperature_at_peak,
+         "z_peak_amplitude": t.z_peak_amplitude,
+         "z_trough_amplitude": t.z_trough_amplitude,
+         "z_peak_to_trough": t.z_peak_to_trough}
         for t in session.transients
     ]
 
@@ -211,6 +217,9 @@ def load_session(path: Path) -> Session:
         sudep=meta.get("sudep", False),
         include_session=meta.get("include_session", True),
         exclusion_reason=meta.get("exclusion_reason"),
+        include_for_baseline=meta.get("include_for_baseline", True),
+        include_for_transients=meta.get("include_for_transients", True),
+        transient_prominence=meta.get("transient_prominence"),
         experiment_label=meta.get("experiment_label", ""),
         landmarks=landmarks,
         preprocessing_config=preproc_config,
