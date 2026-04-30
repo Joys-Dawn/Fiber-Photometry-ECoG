@@ -49,7 +49,8 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
     # --- Temperature ---
     temp_result = process_temperature(
         raw.temperature_raw, raw.temp_bit_volts, fs, config.temperature,
-        slope=raw.temp_slope, intercept=raw.temp_intercept)
+        slope=raw.temp_slope, intercept=raw.temp_intercept,
+        baseline_window_s=session.landmarks.baseline_window_s)
 
     session.landmarks.baseline_temp = temp_result.baseline_temp
     session.landmarks.max_temp = temp_result.max_temp
@@ -120,13 +121,13 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         TRANSIENT_CONFIGS[strategy_name],
         temp_result.temperature_smooth)
 
-    # --- Spike detection (pre-ictal only: cut 10s before seizure/equivalent) ---
+    # --- Spike detection (pre-ictal only: cut 30s before seizure/equivalent) ---
     exclusion_zones = []
     ueo_t = session.landmarks.ueo_time
     if ueo_t is None:
         ueo_t = getattr(session.landmarks, 'equiv_ueo_time', None)
     if ueo_t is not None:
-        exclusion_zones.append((ueo_t - 10.0, float('inf')))
+        exclusion_zones.append((ueo_t - 30.0, float('inf')))
     session.spikes = detect_spikes(
         ecog_filt, fs, session.landmarks.heating_start_time, config.spike_detection,
         exclusion_zones=exclusion_zones if exclusion_zones else None)

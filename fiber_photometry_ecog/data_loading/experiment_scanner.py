@@ -153,6 +153,28 @@ def _parse_time_value(v):
         return None
 
 
+def _parse_window(s: str):
+    """Parse 'start-end' / 'start to end' / 'start,end' (in seconds) → (start, end).
+
+    Returns None if the string doesn't contain two numbers or numbers parse fails.
+    Single-number strings return None (those belong to the baseline_temp column).
+    """
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    txt = s.replace(" to ", "-").replace(",", "-").replace("..", "-")
+    parts = [p.strip() for p in txt.split("-") if p.strip()]
+    if len(parts) != 2:
+        return None
+    try:
+        start = float(parts[0])
+        end = float(parts[1])
+    except ValueError:
+        return None
+    if end <= start:
+        return None
+    return (start, end)
+
+
 def _parse_bool(v):
     """Parse Yes/No / true/false / 0/1 → bool. Returns None if blank."""
     if v is None:
@@ -257,6 +279,10 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     include_baseline_col = _find_col(cols, ["include", "baseline"])
     include_transients_col = _find_col(cols, ["include", "transient"])
     prominence_col = _find_col(cols, ["prominence"])
+    baseline_window_col = (
+        _find_col(cols, ["baseline", "window"])
+        or _find_col(cols, ["baseline", "time", "window"])
+    )
 
     if mouse_col is None:
         logger.warning("Data log has no recognizable 'mouse' column: %s", log_path.name)
@@ -372,6 +398,12 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
                 except (ValueError, TypeError):
                     pass
 
+        baseline_window_s = None
+        if baseline_window_col:
+            v = row.get(baseline_window_col)
+            if v is not None and not (isinstance(v, float) and pd.isna(v)):
+                baseline_window_s = _parse_window(str(v).strip())
+
         lookup[(mouse, date_str)] = {
             "genotype": genotype,
             "seizure": seizure,
@@ -390,5 +422,6 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
             "include_for_baseline": include_for_baseline,
             "include_for_transients": include_for_transients,
             "transient_prominence": transient_prominence,
+            "baseline_window_s": baseline_window_s,
         }
     return lookup

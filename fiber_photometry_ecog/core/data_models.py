@@ -7,7 +7,7 @@ passed between preprocessing, analysis, and visualization modules.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import numpy as np
 
@@ -23,6 +23,7 @@ class SessionLandmarks:
     behavioral_onset_time: Optional[float] = None
     off_time: Optional[float] = None        # seizure offset
     baseline_temp: Optional[float] = None   # calculated from temperature trace
+    baseline_window_s: Optional[Tuple[float, float]] = None  # (start_s, end_s) for baseline metrics; None = use heating_start_time
     max_temp: Optional[float] = None        # calculated
     max_temp_time: Optional[float] = None   # time of peak temperature (seconds)
     terminal_temp: Optional[float] = None   # temperature at end of recording

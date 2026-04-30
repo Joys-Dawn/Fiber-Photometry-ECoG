@@ -192,7 +192,12 @@ def load_session(path: Path) -> Session:
     # Landmarks
     landmarks = None
     if "landmarks" in meta and meta["landmarks"]:
-        landmarks = SessionLandmarks(**meta["landmarks"])
+        lm_dict = dict(meta["landmarks"])
+        # JSON round-trip turns tuples into lists; restore the tuple type
+        bw = lm_dict.get("baseline_window_s")
+        if isinstance(bw, list) and len(bw) == 2:
+            lm_dict["baseline_window_s"] = (float(bw[0]), float(bw[1]))
+        landmarks = SessionLandmarks(**lm_dict)
 
     # Transients
     transients = [TransientEvent(**t) for t in meta.get("transients", [])]

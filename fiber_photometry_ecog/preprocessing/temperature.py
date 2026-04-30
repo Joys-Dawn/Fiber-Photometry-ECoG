@@ -6,7 +6,7 @@ Default calibration constants from the lab's thermistor setup.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -31,6 +31,7 @@ def process_temperature(
     config: TemperatureConfig | None = None,
     slope: Optional[float] = None,
     intercept: Optional[float] = None,
+    baseline_window_s: Optional[Tuple[float, float]] = None,
 ) -> TemperatureResult:
     """Convert raw ADC values to Celsius and extract landmarks.
 
@@ -82,10 +83,22 @@ def process_temperature(
         temperature_smooth = temperature_smooth.copy()
         temperature_smooth[dropout_mask] = np.nan
 
-    # Landmarks (nan-aware so dropouts in the baseline window don't contaminate)
-    baseline_n = int(config.baseline_duration_s * fs)
-    baseline_n = min(baseline_n, len(temperature_smooth))
-    baseline_temp = float(np.nanmean(temperature_smooth[:baseline_n]))
+    # Landmarks (nan-aware so dropouts in the baseline window don't contaminate).
+    # If a session-specific baseline_window_s = (start_s, end_s) is provided
+    # (from the data log), use that. Otherwise fall back to the first
+    # baseline_duration_s seconds of the recording.
+    if baseline_window_s is not None:
+        i0 = max(0, int(baseline_window_s[0] * fs))
+        i1 = min(len(temperature_smooth), int(baseline_window_s[1] * fs))
+        if i1 > i0:
+            baseline_temp = float(np.nanmean(temperature_smooth[i0:i1]))
+        else:
+            baseline_n = min(int(config.baseline_duration_s * fs), len(temperature_smooth))
+            baseline_temp = float(np.nanmean(temperature_smooth[:baseline_n]))
+    else:
+        baseline_n = int(config.baseline_duration_s * fs)
+        baseline_n = min(baseline_n, len(temperature_smooth))
+        baseline_temp = float(np.nanmean(temperature_smooth[:baseline_n]))
 
     max_idx = int(np.nanargmax(temperature_smooth))
     max_temp = float(temperature_smooth[max_idx])

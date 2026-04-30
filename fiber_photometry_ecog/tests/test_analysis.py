@@ -375,10 +375,11 @@ class TestPostictal:
         assert len(sr.cooling_bin_means) > 0
 
     def test_final_metrics(self):
-        s = _make_session(duration_s=300.0)
+        # final_time = time-since-seizure-offset: duration_s (300) - off_time (200) = 100
+        s = _make_session(duration_s=300.0, off_time=200.0)
         result = compute_postictal([s])
         sr = result.session_results[0]
-        assert sr.final_time == pytest.approx(300.0, abs=1.0)
+        assert sr.final_time == pytest.approx(100.0, abs=1.0)
         assert sr.final_temp > 0
 
     def test_group_final_metrics(self):

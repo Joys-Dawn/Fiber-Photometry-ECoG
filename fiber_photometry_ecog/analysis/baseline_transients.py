@@ -43,7 +43,7 @@ def compute_baseline_transients(
     config: AnalysisConfig | None = None,
 ) -> BaselineTransientGroupResult:
     """Compute baseline transient metrics for a group of sessions."""
-    sessions = [s for s in sessions if s.include_for_baseline]
+    sessions = [s for s in sessions if s.include_for_transients]
 
     session_results = []
     freqs = []

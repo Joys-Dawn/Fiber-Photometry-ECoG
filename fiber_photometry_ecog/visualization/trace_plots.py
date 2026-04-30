@@ -113,6 +113,7 @@ def plot_sanity_check(
     # 2. Corrected z-ΔF/F
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color=color, linewidth=0.3)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
     ax.set_ylabel("z-ΔF/F")
 
     # 3. HPF/detection stream + transients
@@ -120,6 +121,7 @@ def plot_sanity_check(
     _det_label = "HPF z-ΔF/F" if _used_hpf else "z-ΔF/F"
     ax = axes[2]
     ax.plot(time_s, proc.photometry.dff_hpf, color=color, linewidth=0.3)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
     if transients:
         peak_times = [t.peak_time for t in transients]
         peak_idxs = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
@@ -143,6 +145,11 @@ def plot_sanity_check(
     # 6. Temperature
     ax = axes[5]
     ax.plot(time_s, proc.temperature_smooth, color=TEMP_COLOR, linewidth=0.5)
+    bl_temp = getattr(session.landmarks, "baseline_temp", None) if session.landmarks else None
+    if bl_temp is not None and not np.isnan(bl_temp):
+        ax.axhline(bl_temp, color="black", linestyle="--", linewidth=0.6, alpha=0.5,
+                   label=f"baseline={bl_temp:.2f}°C")
+        ax.legend(loc="lower right", fontsize=7)
     ax.set_ylabel("Temp (°C)")
     ax.set_xlabel("Time (s)")
 
@@ -196,6 +203,7 @@ def plot_zoomed(
     # 1. z-ΔF/F
     ax = axes[0]
     ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask], color=color, linewidth=0.4)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
     ax.set_ylabel("z-ΔF/F")
 
     # 2. Filtered ECoG
@@ -252,13 +260,11 @@ def plot_transient_review(
     ax.plot(t, raw.signal_405[mask], color="violet", linewidth=0.3, label="405nm")
     ax.set_ylabel("Raw (V)")
     ax.legend(loc="upper right", fontsize=7)
-    ax.set_title("Raw Signals")
 
     # Row 1: corrected dF/F (NOT z-scored)
     ax = axes[1]
     ax.plot(t, proc.photometry.dff[mask], color=color, linewidth=0.3)
-    ax.set_ylabel("ΔF/F")
-    ax.set_title("Corrected ΔF/F")
+    ax.set_ylabel("Corrected ΔF/F")
 
     # Rows 2..N: detection stream with transient markers at each prominence
     _used_hpf = getattr(session.preprocessing_config, 'photometry', None) and session.preprocessing_config.photometry.apply_hpf
@@ -268,6 +274,7 @@ def plot_transient_review(
         ax = axes[2 + i]
         if det_signal is not None:
             ax.plot(t, det_signal[mask], color=color, linewidth=0.3)
+        ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
         transients = transients_by_prominence.get(prom, [])
         bl_transients = [tr for tr in transients if tr.peak_time <= heat_start]
         if bl_transients and det_signal is not None:
@@ -275,8 +282,7 @@ def plot_transient_review(
             peak_idxs = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
             ax.plot(np.array(peak_times), det_signal[peak_idxs],
                     "v", color="black", markersize=4)
-        ax.set_ylabel(_det_label)
-        ax.set_title(f"{_det_label} — prominence >= {prom}")
+        ax.set_ylabel(f"{_det_label}\nprom ≥ {prom}")
 
     axes[-1].set_xlabel("Time (s)")
     fig.suptitle(

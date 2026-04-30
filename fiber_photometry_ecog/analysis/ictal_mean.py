@@ -35,6 +35,7 @@ class TriggeredAverage:
     auc: float                  # trapezoidal AUC of mean trace
     per_session_auc: List[float]    # AUC for each session's triggered trace
     per_session_traces: List[np.ndarray]  # individual session traces
+    auc_window_s: float = 0.0   # integration window (0 to this many seconds post-event)
 
 
 @dataclass
@@ -56,6 +57,8 @@ class IctalMeanGroupResult:
     delta_mean: float
     delta_sem: float
     triggered_averages: Dict[str, TriggeredAverage]  # keyed by landmark name
+    auc_window_s: float = 0.0    # integration window used for triggered AUCs
+    mean_seizure_duration_s: float = np.nan  # cohort mean (UEO→OFF) when known
 
 
 def _extract_triggered_trace(
@@ -116,6 +119,7 @@ def _compute_triggered_average(
             auc=np.nan,
             per_session_auc=[],
             per_session_traces=[],
+            auc_window_s=auc_end_s,
         )
 
     trace_mat = np.array(traces)
@@ -137,21 +141,34 @@ def _compute_triggered_average(
         auc=auc_mean,
         per_session_auc=aucs,
         per_session_traces=traces,
+        auc_window_s=auc_end_s,
     )
 
 
 def compute_ictal_mean(
     sessions: List[Session],
     config: AnalysisConfig | None = None,
+    auc_end_s_override: Optional[float] = None,
 ) -> IctalMeanGroupResult:
-    """Compute ictal mean signal metrics for a group of sessions."""
+    """Compute ictal mean signal metrics for a group of sessions.
+
+    Parameters
+    ----------
+    auc_end_s_override : if set, use this many seconds for the triggered-AUC
+        integration window instead of `config.triggered_auc_end_s`. The driver
+        passes the cohort's mean seizure duration here so the AUC reflects the
+        actual seizure length rather than a fixed 60s.
+    """
     if config is None:
         config = AnalysisConfig()
+
+    sessions = [s for s in sessions if s.include_for_baseline]
 
     session_results = []
     sz_means = []
     bl_means = []
     deltas = []
+    durations = []
 
     for s in sessions:
         signal, time, fs = get_signal_and_time(s)
@@ -192,9 +209,28 @@ def compute_ictal_mean(
         sz_means.append(sz_mean)
         bl_means.append(bl_mean)
         deltas.append(delta)
+        # Track real (not equivalent) seizure durations for fallback computation
+        if (s.n_seizures > 0
+                and s.landmarks.ueo_time is not None
+                and s.landmarks.off_time is not None
+                and s.landmarks.off_time > s.landmarks.ueo_time):
+            durations.append(s.landmarks.off_time - s.landmarks.ueo_time)
 
     # Triggered averages for each landmark
     window_s = config.triggered_window_s
+
+    # Determine AUC integration window:
+    # - explicit override from caller (driver passes cohort mean) wins
+    # - else, fall back to this cohort's own mean seizure duration
+    # - else, fall back to config default (60s)
+    cohort_mean_dur = float(np.mean(durations)) if durations else np.nan
+    if auc_end_s_override is not None and not np.isnan(auc_end_s_override):
+        auc_end_s = float(auc_end_s_override)
+    elif not np.isnan(cohort_mean_dur):
+        auc_end_s = cohort_mean_dur
+    else:
+        auc_end_s = config.triggered_auc_end_s
+
     landmarks = {
         "EEC": get_eec_time,
         "UEO": get_ueo_time,
@@ -209,7 +245,7 @@ def compute_ictal_mean(
             sessions, func, window_s,
             config.triggered_baseline_start_s,
             config.triggered_baseline_end_s,
-            config.triggered_auc_end_s,
+            auc_end_s,
         )
 
     sz_arr = np.array(sz_means)
@@ -225,6 +261,8 @@ def compute_ictal_mean(
         delta_mean=float(np.mean(d_arr)),
         delta_sem=compute_sem(d_arr),
         triggered_averages=triggered,
+        auc_window_s=auc_end_s,
+        mean_seizure_duration_s=cohort_mean_dur,
     )
 
 
@@ -236,6 +274,7 @@ def compute_wide_ueo_triggered(
     auc_end_s: float = 60.0,
 ) -> TriggeredAverage:
     """Wide-window UEO triggered average for per-cohort visualization."""
+    sessions = [s for s in sessions if s.include_for_baseline]
     return _compute_triggered_average(
         sessions, get_ueo_time, window_s, bl_start_s, bl_end_s, auc_end_s
     )

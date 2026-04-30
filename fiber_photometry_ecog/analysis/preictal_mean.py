@@ -8,7 +8,7 @@ Temperature-binned: mean z-ΔF/F in configurable bins during heating,
 """
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -17,6 +17,7 @@ from ..core.data_models import Session
 from ._helpers import (
     get_ueo_time,
     get_ueo_temp,
+    get_off_time,
     get_signal_and_time,
     get_temperature,
     time_to_index,
@@ -34,6 +35,7 @@ class PreictalMeanSessionResult:
     late_heat_mean: float
     end_late_heat_mean: float
     heating_mean: float                 # consolidated: entire heating period
+    ictal_mean: Optional[float]         # mean within ictal/equivalent period; None if no UEO/OFF
     temp_bin_centers: np.ndarray        # degrees C relative to seizure onset temp
     temp_bin_means: np.ndarray          # mean z-ΔF/F per bin
 
@@ -51,6 +53,8 @@ class PreictalMeanGroupResult:
     end_late_heat_sem: float
     heating_mean: float
     heating_sem: float
+    ictal_mean: float
+    ictal_sem: float
     temp_bin_centers: np.ndarray
     temp_bin_group_mean: np.ndarray     # mean across sessions per bin
     temp_bin_group_sem: np.ndarray      # SEM across sessions per bin
@@ -72,6 +76,7 @@ def compute_preictal_mean(
     lh_means = []
     elh_means = []
     heat_means = []
+    ictal_means = []
 
     # Determine temperature bin edges: from -preictal_temp_range to 0 relative to UEO temp
     bin_size = config.temp_bin_size
@@ -103,11 +108,21 @@ def compute_preictal_mean(
         end_late_n = min(int(10.0 * fs), i_ueo - i_heat)
         elh_mean = float(np.mean(signal[i_ueo - end_late_n:i_ueo]))
 
+        # Ictal mean: window from UEO to OFF (uses equivalents for controls)
+        off_t = get_off_time(s)
+        ictal_mean: Optional[float] = None
+        if off_t is not None and ueo_t is not None and off_t > ueo_t:
+            i_off = time_to_index(off_t, fs)
+            if i_off > i_ueo and i_off <= len(signal):
+                ictal_mean = float(np.mean(signal[i_ueo:i_off]))
+
         bl_means.append(bl_mean)
         eh_means.append(eh_mean)
         lh_means.append(lh_mean)
         elh_means.append(elh_mean)
         heat_means.append(heating_mean)
+        if ictal_mean is not None:
+            ictal_means.append(ictal_mean)
 
         # Temperature-binned: heating portion, relative to seizure onset temp
         heat_signal = signal[i_heat:i_ueo]
@@ -124,6 +139,7 @@ def compute_preictal_mean(
             late_heat_mean=lh_mean,
             end_late_heat_mean=elh_mean,
             heating_mean=heating_mean,
+            ictal_mean=ictal_mean,
             temp_bin_centers=bin_centers.copy(),
             temp_bin_means=temp_bin_vals,
         ))
@@ -134,6 +150,7 @@ def compute_preictal_mean(
     lh_arr = np.array(lh_means)
     elh_arr = np.array(elh_means)
     heat_arr = np.array(heat_means)
+    ictal_arr = np.array(ictal_means) if ictal_means else np.array([])
 
     temp_mat = np.array(all_temp_bins)  # (n_sessions, n_bins)
     temp_group_mean = np.nanmean(temp_mat, axis=0)
@@ -156,6 +173,8 @@ def compute_preictal_mean(
         end_late_heat_sem=compute_sem(elh_arr),
         heating_mean=float(np.mean(heat_arr)),
         heating_sem=compute_sem(heat_arr),
+        ictal_mean=float(np.mean(ictal_arr)) if len(ictal_arr) > 0 else np.nan,
+        ictal_sem=compute_sem(ictal_arr) if len(ictal_arr) > 1 else np.nan,
         temp_bin_centers=bin_centers,
         temp_bin_group_mean=temp_group_mean,
         temp_bin_group_sem=temp_group_sem,

@@ -28,7 +28,7 @@ class PostictalSessionResult:
     heating_session: int
     cooling_bin_centers: np.ndarray
     cooling_bin_means: np.ndarray       # mean z-ΔF/F per temp bin (cooling only)
-    final_time: float                   # seconds from start
+    final_time: float                   # seconds since seizure offset (time[-1] - off_time)
     final_temp: float                   # degrees C
     final_mean_dff: float               # mean z-ΔF/F at end of recording
 
