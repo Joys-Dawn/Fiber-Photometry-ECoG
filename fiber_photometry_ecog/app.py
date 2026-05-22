@@ -40,6 +40,8 @@ from .data_loading import (
     scan_experiment_folder, extract_date_from_oep, read_data_log,
 )
 from .preprocessing import preprocess_session
+from .preprocessing.photometry import STRATEGY_NAMES, strategy_folder_name
+from .core.output_layout import ensure_layout
 from .pairing.engine import assign_all_controls
 from .analysis import (
     compute_cohort_characteristics,
@@ -57,11 +59,15 @@ from .visualization import (
     plot_cohort_characteristics,
     plot_baseline_transients,
     plot_preictal_mean,
+    plot_preictal_mean_diagnostic,
     plot_preictal_transients,
     plot_ictal_mean,
     plot_ictal_transients,
     plot_postictal,
     plot_spike_triggered,
+    plot_ueo_per_cohort,
+    plot_ueo_aligned_heatmaps,
+    plot_experimental_vs_isosbestic_spike_triggered,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -217,11 +223,22 @@ class FiberPhotometryApp:
 
         row0 = ttk.Frame(config_frame)
         row0.pack(fill="x", pady=2)
-        ttk.Label(row0, text="Photometry strategy:").pack(side="left")
-        self.strategy_var = tk.StringVar(value="A")
-        ttk.Combobox(row0, textvariable=self.strategy_var,
-                      values=["A", "B", "C"], state="readonly", width=5).pack(side="left", padx=5)
-        ttk.Label(row0, text="(A=Chandni, B=Meiling, C=IRLS/Keevers)").pack(side="left")
+        ttk.Label(row0, text="Photometry strategies (each checked one is run):").pack(side="left")
+        # IRLS is the chosen default; the others are opt-in for pilot comparison.
+        self.strategy_checks: Dict[str, tk.BooleanVar] = {
+            "A": tk.BooleanVar(value=False),
+            "B": tk.BooleanVar(value=False),
+            "C": tk.BooleanVar(value=True),
+            "D": tk.BooleanVar(value=False),
+        }
+        for letter in ("A", "B", "C", "D"):
+            ttk.Checkbutton(
+                row0, text=f"{letter} ({STRATEGY_NAMES[letter]})",
+                variable=self.strategy_checks[letter],
+            ).pack(side="left", padx=4)
+        # Single-strategy var kept for the load-saved/extract flows which still
+        # operate on one strategy at a time.
+        self.strategy_var = tk.StringVar(value="C")
 
         # --- Run button + progress ---
         btn_frame = ttk.Frame(parent)
@@ -609,7 +626,9 @@ class FiberPhotometryApp:
 
         self._log_loading(f"Loading {len(saved)} sessions (strategy {chosen})...")
         self.output_dir = Path(self.output_dir_var.get())
-        sanity_out = str(self.output_dir / "plots" / "sanity")
+        strategy_root = self.output_dir / strategy_folder_name(chosen)
+        layout = ensure_layout(strategy_root)
+        sanity_out = str(layout["quality_check"])
         for path in saved:
             try:
                 session = load_session(path)
@@ -636,7 +655,7 @@ class FiberPhotometryApp:
                 self._log_loading(f"  ERROR loading {path.name}: {e}")
 
         self._log_loading(f"Loaded {len(self.sessions)} sessions (strategy {chosen}). "
-                          f"Sanity plots in {sanity_out}")
+                          f"Quality check plots in {sanity_out}")
         # Set strategy dropdown to match loaded data
         self.strategy_var.set(chosen)
         if self.sessions and self.sessions[0].processed:
@@ -812,15 +831,19 @@ class FiberPhotometryApp:
     # Tab 2 actions — preprocessing
     # ------------------------------------------------------------------
 
-    def _read_preprocessing_config(self) -> PreprocessingConfig:
-        """Build a PreprocessingConfig from the GUI fields.
+    def _read_preprocessing_config(self, strategy: str) -> PreprocessingConfig:
+        """Build a PreprocessingConfig for *strategy*.
 
-        Only the strategy is user-selectable (per xlsx). All other
-        parameters use scientifically validated defaults.
+        Only the strategy letter is user-selectable; everything else uses
+        scientifically validated defaults from PreprocessingConfig.
         """
         return PreprocessingConfig(
-            photometry=PhotometryConfig(strategy=self.strategy_var.get()),
+            photometry=PhotometryConfig(strategy=strategy),
         )
+
+    def _selected_strategies(self) -> List[str]:
+        """Return the list of strategy letters whose checkbox is ticked."""
+        return [s for s in ("A", "B", "C", "D") if self.strategy_checks[s].get()]
 
     def _run_preprocessing(self) -> None:
         if not self.sessions:
@@ -830,64 +853,106 @@ class FiberPhotometryApp:
             messagebox.showwarning("Warning", "Already running.")
             return
 
-        self.preprocessing_config = self._read_preprocessing_config()
+        strategies = self._selected_strategies()
+        if not strategies:
+            messagebox.showerror("Error", "Select at least one photometry strategy.")
+            return
+
         self.output_dir = Path(self.output_dir_var.get())
+        # Active strategy for downstream tabs follows the first selected.
+        self.strategy_var.set(strategies[0])
 
         def worker():
             self.running = True
-            total = len(self.sessions)
+            total_sessions = len(self.sessions)
+            total_steps = total_sessions * len(strategies)
+            step = 0
 
-            for i, session in enumerate(self.sessions):
-                self._log_preproc(f"[{i+1}/{total}] Preprocessing {session.mouse_id}...")
-                self.root.after(0, lambda v=int((i / total) * 100): self.preproc_progress.configure(value=v))
-                self.root.after(0, lambda s=session.mouse_id, idx=i: self.preproc_progress_label.configure(
-                    text=f"Processing {s} ({idx+1}/{total})"))
+            for strategy in strategies:
+                config = self._read_preprocessing_config(strategy)
+                strategy_label = STRATEGY_NAMES[strategy]
+                strategy_root = self.output_dir / strategy_folder_name(strategy)
+                layout = ensure_layout(strategy_root)
+                qc_dir = str(layout["quality_check"])
+                self._log_preproc(f"=== Strategy {strategy} ({strategy_label}) ===")
 
-                config = self.preprocessing_config
-                session.preprocessing_config = config
+                for i, session in enumerate(self.sessions):
+                    step += 1
+                    self._log_preproc(
+                        f"  [{i+1}/{total_sessions}] {session.mouse_id} ({strategy})")
+                    pct = int((step / total_steps) * 100)
+                    self.root.after(0, lambda v=pct: self.preproc_progress.configure(value=v))
+                    self.root.after(
+                        0, lambda s=session.mouse_id, lbl=strategy_label, idx=i, t=total_sessions:
+                            self.preproc_progress_label.configure(
+                                text=f"{lbl}: {s} ({idx+1}/{t})"))
 
-                # Set baseline_end_s from heating start
-                config.photometry.baseline_end_s = session.landmarks.heating_start_time
+                    session.preprocessing_config = config
+                    config.photometry.baseline_end_s = session.landmarks.heating_start_time
 
-                try:
-                    preprocess_session(session, config)
-                except ValueError as exc:
-                    self._log_preproc(f"  SKIPPED: {exc}")
-                    self.root.after(0, lambda idx=i: self._update_session_status(idx, "skipped"))
-                    continue
+                    try:
+                        preprocess_session(session, config)
+                    except ValueError as exc:
+                        self._log_preproc(f"    SKIPPED: {exc}")
+                        self.root.after(0, lambda idx=i: self._update_session_status(idx, "skipped"))
+                        continue
 
-                self._log_preproc(
-                    f"  Temperature: baseline={session.landmarks.baseline_temp:.1f}°C, "
-                    f"max={session.landmarks.max_temp:.1f}°C")
-                self._log_preproc(
-                    f"  ECoG filtered ({config.ecog.bandpass_low}-{config.ecog.bandpass_high} Hz)")
-                self._log_preproc(f"  Photometry: strategy {config.photometry.strategy}")
-                self._log_preproc(f"  Transients: {len(session.transients)} detected")
-                self._log_preproc(f"  Spikes: {len(session.spikes)} detected")
+                    self._log_preproc(
+                        f"    Temp baseline={session.landmarks.baseline_temp:.1f}°C, "
+                        f"max={session.landmarks.max_temp:.1f}°C; "
+                        f"transients={len(session.transients)}, spikes={len(session.spikes)}")
 
-                # Save sanity check plots
-                out = str(self.output_dir / "plots" / "sanity")
-                path_v1 = plot_sanity_check(session, out, session.transients)
-                path_v2 = plot_zoomed(session, out)
-                self._log_preproc(f"  Plots saved: {path_v1}, {path_v2}")
+                    path_v1 = plot_sanity_check(session, qc_dir, session.transients)
+                    path_v2 = plot_zoomed(session, qc_dir)
+                    self._log_preproc(f"    QC plots: {Path(path_v1).name}, {Path(path_v2).name}")
 
-                # Update treeview status
-                self.root.after(0, lambda idx=i: self._update_session_status(idx, "preprocessed"))
+                    self.root.after(0, lambda idx=i: self._update_session_status(idx, "preprocessed"))
+
+                # Auto-save when multiple strategies are selected (the user is
+                # building a side-by-side comparison and clearly wants both on
+                # disk); fall back to the existing prompt for the single-
+                # strategy case.
+                if len(strategies) > 1:
+                    self.root.after(0, lambda c=config: self._save_preprocessed_silent(c))
+                else:
+                    self.root.after(0, lambda c=config: self._prompt_save_preprocessed(c))
 
             self.root.after(0, lambda: self.preproc_progress.configure(value=100))
             self.root.after(0, lambda: self.preproc_progress_label.configure(
-                text=f"Done — {total} sessions preprocessed", foreground="green"))
-
-            self._log_preproc("Preprocessing complete. Use the trace viewer below to mark landmarks.")
-            # Show first session's ECoG for marking
+                text=f"Done — {total_sessions} sessions × {len(strategies)} strategy/strategies",
+                foreground="green"))
+            self._log_preproc("Preprocessing complete. Mark landmarks via the trace viewer below.")
             if self.sessions:
                 self.root.after(0, lambda: self._show_ecog_for_marking(0))
 
-            # Ask user if they want to save
-            self.root.after(0, lambda: self._prompt_save_preprocessed(config))
             self.running = False
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _save_preprocessed_silent(self, config) -> None:
+        """Save preprocessed sessions for *config*'s strategy without prompting.
+
+        Used when running multi-strategy preprocessing: each strategy auto-saves
+        so the user gets a complete side-by-side comparison on disk.
+        """
+        exp_path = self.experiment_path_var.get().strip()
+        if not exp_path:
+            return
+        strategy = config.photometry.strategy
+        sessions_dir = get_sessions_dir(exp_path, strategy)
+        existing = list(sessions_dir.glob("*.npz")) if sessions_dir.exists() else []
+        for f in existing:
+            f.unlink()
+
+        def save_worker():
+            for s in self.sessions:
+                try:
+                    save_session(s, sessions_dir)
+                except Exception as e:
+                    self._log_preproc(f"  WARN: could not save {s.mouse_id}: {e}")
+            self._log_preproc(f"  Saved {len(self.sessions)} sessions (strategy {strategy})")
+
+        threading.Thread(target=save_worker, daemon=True).start()
 
     def _prompt_save_preprocessed(self, config) -> None:
         """Ask user whether to save preprocessed data, then save with progress."""
@@ -970,8 +1035,20 @@ class FiberPhotometryApp:
         def worker():
             self.running = True
             config = self.analysis_config
-            out_plots = str(self.output_dir / "plots" / "group")
-            steps = 10  # pairing + 8 modules + done
+
+            # Output layout follows the strategy that's currently loaded —
+            # session.preprocessing_config carries the strategy used at preprocess time.
+            chosen_strategy = (self.sessions[0].preprocessing_config.photometry.strategy
+                               if self.sessions and self.sessions[0].preprocessing_config
+                               else self.strategy_var.get())
+            strategy_root = self.output_dir / strategy_folder_name(chosen_strategy)
+            layout = ensure_layout(strategy_root)
+            means_dir = str(layout["means"])
+            transients_dir = str(layout["transients"])
+            param_dir = str(layout["parameter_detection"])
+            qc_dir = str(layout["quality_check"])
+
+            steps = 11  # pairing + 8 modules + diagnostic + done
             step = 0
 
             def progress(msg: str):
@@ -1013,42 +1090,24 @@ class FiberPhotometryApp:
                     key = "wt"
                 cohort_groups.setdefault(key, []).append(s)
 
-            # --- 2–9. Run 8 analysis modules ---
-            module_names = [
-                "Cohort characteristics",
-                "Baseline transients",
-                "Pre-ictal mean",
-                "Pre-ictal transients",
-                "Ictal mean",
-                "Ictal transients",
-                "Postictal",
-                "Spike-triggered averages",
-            ]
-
-            compute_fns = [
-                compute_cohort_characteristics,
-                compute_baseline_transients,
-                compute_preictal_mean,
-                compute_preictal_transients,
-                compute_ictal_mean,
-                compute_ictal_transients,
-                compute_postictal,
-                None,  # spike_triggered needs special handling
-            ]
-
-            plot_fns = [
-                plot_cohort_characteristics,
-                plot_baseline_transients,
-                plot_preictal_mean,
-                plot_preictal_transients,
-                plot_ictal_mean,
-                plot_ictal_transients,
-                plot_postictal,
-                plot_spike_triggered,
+            # --- 2–9. Run 8 analysis modules, each routed to means/ or transients/. ---
+            # (name, compute_fn, plot_fn, dest_dir)
+            modules = [
+                ("Cohort characteristics", compute_cohort_characteristics, plot_cohort_characteristics, means_dir),
+                ("Baseline transients", compute_baseline_transients, plot_baseline_transients, transients_dir),
+                ("Pre-ictal mean", compute_preictal_mean, plot_preictal_mean, means_dir),
+                ("Pre-ictal transients", compute_preictal_transients, plot_preictal_transients, transients_dir),
+                ("Ictal mean", compute_ictal_mean, plot_ictal_mean, means_dir),
+                ("Ictal transients", compute_ictal_transients, plot_ictal_transients, transients_dir),
+                ("Postictal", compute_postictal, plot_postictal, means_dir),
+                ("Spike-triggered averages", None, plot_spike_triggered, means_dir),
             ]
 
             failed_modules = []
-            for name, compute_fn, plot_fn in zip(module_names, compute_fns, plot_fns):
+            # Capture cross-module data for follow-up plots (Phase 2f, 4e).
+            ictal_results_by_cohort = {}
+            spike_times_by_cohort: Dict[str, List[np.ndarray]] = {}
+            for name, compute_fn, plot_fn, dest_dir in modules:
                 progress(f"Running {name}...")
                 try:
                     # Compute results per cohort
@@ -1059,19 +1118,76 @@ class FiberPhotometryApp:
                             for s in sessions:
                                 spike_times_list.append(
                                     np.array([sp.time for sp in s.spikes]) if s.spikes else np.array([]))
+                            spike_times_by_cohort[cohort_name] = spike_times_list
                             results[cohort_name] = compute_spike_triggered_average(
                                 sessions, spike_times_list, config)
+                        elif name == "Ictal mean":
+                            # OFF AUC fixed at 100 s (spec D5); others use config default.
+                            results[cohort_name] = compute_ictal_mean(
+                                sessions, config,
+                                auc_end_s_per_landmark={"OFF": 100.0},
+                            )
                         else:
                             results[cohort_name] = compute_fn(sessions, config)
 
                     # Plot
-                    fig_path = plot_fn(results, out_plots)
+                    fig_path = plot_fn(results, dest_dir)
                     self._log_extract(f"  {name}: saved {fig_path}")
+                    if name == "Ictal mean":
+                        ictal_results_by_cohort = results
 
                 except Exception as e:
                     failed_modules.append(name)
                     self._log_extract(f"  {name}: ERROR — {e}")
                     logger.exception("Error in %s", name)
+
+            # --- 9b. Follow-up multi-source plots ---
+            # UEO-aligned heatmaps split by cohort (Phase 4e)
+            if ictal_results_by_cohort:
+                progress("Writing UEO-aligned heatmaps...")
+                try:
+                    paths = plot_ueo_aligned_heatmaps(ictal_results_by_cohort, means_dir)
+                    for c, p in paths.items():
+                        self._log_extract(f"  UEO heatmap [{c}]: {p}")
+                except Exception as e:
+                    failed_modules.append("UEO-aligned heatmaps")
+                    self._log_extract(f"  UEO heatmaps: ERROR — {e}")
+                    logger.exception("Error in UEO heatmaps")
+
+            # Experimental (470) vs isosbestic (405) spike-triggered overlay
+            # — motion-artifact diagnostic (Phase 2f). Quality-check, not a
+            # signal metric, so it lives under the quality check folder.
+            if spike_times_by_cohort:
+                progress("Writing 470 vs 405 spike-triggered overlay...")
+                try:
+                    p = plot_experimental_vs_isosbestic_spike_triggered(
+                        cohort_groups, spike_times_by_cohort, qc_dir
+                    )
+                    if p:
+                        self._log_extract(f"  470/405 overlay: {p}")
+                except Exception as e:
+                    failed_modules.append("470/405 spike-triggered overlay")
+                    self._log_extract(f"  470/405 overlay: ERROR — {e}")
+                    logger.exception("Error in 470/405 overlay")
+
+            # --- 10. Per-session parameter detection diagnostic ---
+            progress("Writing parameter detection diagnostics...")
+            try:
+                n_done = 0
+                for cohort_sessions in cohort_groups.values():
+                    for s in cohort_sessions:
+                        lm = s.landmarks
+                        if lm is None or lm.heating_start_time is None:
+                            continue
+                        if lm.ueo_time is None and getattr(lm, "equiv_ueo_time", None) is None:
+                            continue
+                        if plot_preictal_mean_diagnostic(s, param_dir):
+                            n_done += 1
+                self._log_extract(f"  Parameter detection: wrote {n_done} session plots")
+            except Exception as e:
+                failed_modules.append("Parameter detection")
+                self._log_extract(f"  Parameter detection: ERROR — {e}")
+                logger.exception("Error in parameter detection")
 
             # Update session statuses
             for i in range(len(self.sessions)):

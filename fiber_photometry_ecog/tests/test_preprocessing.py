@@ -35,6 +35,10 @@ from fiber_photometry_ecog.preprocessing.photometry.strategy_c_irls import (
     IRLSStrategy,
     preprocess_irls,
 )
+from fiber_photometry_ecog.preprocessing.photometry.strategy_d_no_isosbestic import (
+    NoIsosbesticStrategy,
+    preprocess_no_isosbestic,
+)
 from fiber_photometry_ecog.preprocessing.photometry import (
     PhotometryStrategy,
 )
@@ -333,11 +337,15 @@ class TestPhotometryProtocol:
         """IRLSStrategy must satisfy PhotometryStrategy Protocol."""
         assert isinstance(IRLSStrategy(), PhotometryStrategy)
 
+    def test_no_isosbestic_implements_protocol(self):
+        """NoIsosbesticStrategy must satisfy PhotometryStrategy Protocol."""
+        assert isinstance(NoIsosbesticStrategy(), PhotometryStrategy)
+
     def test_protocol_method_works(self):
         """Calling preprocess via Protocol interface should work."""
         np.random.seed(42)
         s470, s405, _ = make_photometry_pair(duration=120.0)
-        for strategy_cls in [ChandniStrategy, MeilingStrategy, IRLSStrategy]:
+        for strategy_cls in [ChandniStrategy, MeilingStrategy, IRLSStrategy, NoIsosbesticStrategy]:
             strategy: PhotometryStrategy = strategy_cls()
             result = strategy.preprocess(s470, s405, 130.0)
             assert isinstance(result, PhotometryResult)
@@ -566,6 +574,51 @@ class TestStrategyC:
         # is on the same scale as filt_470 (both ~1-3 range), so
         # (filt_470 - fitted_iso) / fitted_iso should be near 0
         assert np.mean(np.abs(result.dff)) < 0.5
+
+
+class TestStrategyD:
+    def test_returns_photometry_result(self):
+        np.random.seed(42)
+        s470, s405, _ = make_photometry_pair(duration=300.0)
+        result = preprocess_no_isosbestic(s470, s405, 130.0)
+        assert isinstance(result, PhotometryResult)
+        assert len(result.dff) == len(s470)
+
+    def test_class_matches_function(self):
+        np.random.seed(42)
+        s470, s405, _ = make_photometry_pair(duration=300.0)
+        result_fn = preprocess_no_isosbestic(s470, s405, 130.0)
+        np.random.seed(42)
+        s470, s405, _ = make_photometry_pair(duration=300.0)
+        result_cls = NoIsosbesticStrategy().preprocess(s470, s405, 130.0)
+        np.testing.assert_array_equal(result_fn.dff, result_cls.dff)
+
+    def test_ignores_isosbestic(self):
+        """Output must not depend on the 405 channel since this strategy
+        skips isosbestic correction entirely."""
+        np.random.seed(42)
+        s470, _, _ = make_photometry_pair(duration=300.0)
+        np.random.seed(7)
+        _, s405_alt, _ = make_photometry_pair(duration=300.0)
+        result1 = preprocess_no_isosbestic(s470, np.zeros_like(s470), 130.0)
+        result2 = preprocess_no_isosbestic(s470, s405_alt, 130.0)
+        np.testing.assert_array_equal(result1.dff, result2.dff)
+
+    def test_preserves_transient(self):
+        """Calcium transient in 470 should survive detrending."""
+        np.random.seed(42)
+        s470, s405, _ = make_photometry_pair(
+            duration=300.0,
+            transient_times=[150.0],
+            transient_amp=1.0,
+            transient_width_s=2.0,
+        )
+        result = preprocess_no_isosbestic(s470, s405, 130.0)
+        peak_region = result.dff[int(148 * 130):int(152 * 130)]
+        baseline_region = result.dff[:int(50 * 130)]
+        assert np.max(peak_region) > (
+            np.mean(baseline_region) + 2 * np.std(baseline_region)
+        )
 
 
 # ---------------------------------------------------------------------------

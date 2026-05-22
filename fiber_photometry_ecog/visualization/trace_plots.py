@@ -14,15 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.data_models import Session, TransientEvent
-from .colors import ECOG_COLOR, TEMP_COLOR, COHORT_COLORS
-
-LANDMARK_COLORS = {
-    "Heating start": "green",
-    "EEC": "orange",
-    "UEO": "red",
-    "Behavioral onset": "purple",
-    "OFF": "blue",
-}
+from .colors import (
+    ECOG_COLOR, TEMP_COLOR, COHORT_COLORS,
+    LANDMARK_COLORS, LANDMARK_DISPLAY_LABELS, DFF_LABEL,
+)
 
 
 def _draw_landmark_lines(
@@ -33,6 +28,9 @@ def _draw_landmark_lines(
 ):
     """Draw vertical lines for all non-None landmarks across *axes*.
 
+    Lines outside the first axis's current xlim are skipped (keeps zoomed
+    plots clean).
+
     Parameters
     ----------
     axes : array of Axes
@@ -41,25 +39,24 @@ def _draw_landmark_lines(
     label_axis : index of the axis that gets the legend labels (others get no label)
     """
     entries = [
-        ("Heating start", landmarks.heating_start_time),
-        ("EEC", landmarks.eec_time or landmarks.equiv_eec_time),
-        ("UEO", landmarks.ueo_time or landmarks.equiv_ueo_time),
-        ("Behavioral onset", landmarks.behavioral_onset_time or landmarks.equiv_behavioral_onset_time),
-        ("OFF", landmarks.off_time or landmarks.equiv_off_time),
+        ("heating_start", landmarks.heating_start_time),
+        ("eec", landmarks.eec_time or landmarks.equiv_eec_time),
+        ("ueo", landmarks.ueo_time or landmarks.equiv_ueo_time),
+        ("behavioral_onset", landmarks.behavioral_onset_time or landmarks.equiv_behavioral_onset_time),
+        ("off", landmarks.off_time or landmarks.equiv_off_time),
     ]
+    xlim = axes[0].get_xlim()
     drawn = 0
-    for name, t in entries:
+    for key, t in entries:
         if t is None:
             continue
         x = t - offset
-        color = LANDMARK_COLORS[name]
-        xlim = axes[0].get_xlim()
         if x < xlim[0] or x > xlim[1]:
             continue
         for i, ax in enumerate(axes):
             ax.axvline(
-                x, color=color, linestyle="--", linewidth=0.8, alpha=0.7,
-                label=name if i == label_axis else None,
+                x, color=LANDMARK_COLORS[key], linestyle="--", linewidth=0.8, alpha=0.7,
+                label=LANDMARK_DISPLAY_LABELS[key] if i == label_axis else None,
             )
         drawn += 1
     if drawn:
@@ -114,11 +111,11 @@ def plot_sanity_check(
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color=color, linewidth=0.3)
     ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_ylabel("z-ΔF/F")
+    ax.set_ylabel(DFF_LABEL)
 
     # 3. HPF/detection stream + transients
     _used_hpf = getattr(session.preprocessing_config, 'photometry', None) and session.preprocessing_config.photometry.apply_hpf
-    _det_label = "HPF z-ΔF/F" if _used_hpf else "z-ΔF/F"
+    _det_label = f"HPF {DFF_LABEL}" if _used_hpf else DFF_LABEL
     ax = axes[2]
     ax.plot(time_s, proc.photometry.dff_hpf, color=color, linewidth=0.3)
     ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
@@ -156,12 +153,12 @@ def plot_sanity_check(
     _draw_landmark_lines(axes, session.landmarks, offset=0.0, label_axis=5)
 
     fig.suptitle(f"{session.mouse_id} S{session.heating_session} — sanity check", fontsize=10)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
 
     path = os.path.join(
-        output_dir, f"{session.mouse_id}_S{session.heating_session}_v1_sanity.png"
+        output_dir, f"{session.mouse_id}_S{session.heating_session}_full_trace.png"
     )
-    fig.savefig(path, dpi=150)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close("all")
     return path
 
@@ -204,7 +201,7 @@ def plot_zoomed(
     ax = axes[0]
     ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask], color=color, linewidth=0.4)
     ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_ylabel("z-ΔF/F")
+    ax.set_ylabel(DFF_LABEL)
 
     # 2. Filtered ECoG
     ax = axes[1]
@@ -215,12 +212,12 @@ def plot_zoomed(
     _draw_landmark_lines(axes, landmarks, offset=t_zero, label_axis=0)
 
     fig.suptitle(f"{session.mouse_id} S{session.heating_session} — zoomed", fontsize=10)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     path = os.path.join(
-        output_dir, f"{session.mouse_id}_S{session.heating_session}_v2_zoomed.png"
+        output_dir, f"{session.mouse_id}_S{session.heating_session}_peri_ictal.png"
     )
-    fig.savefig(path, dpi=150)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close("all")
     return path
 
@@ -268,7 +265,7 @@ def plot_transient_review(
 
     # Rows 2..N: detection stream with transient markers at each prominence
     _used_hpf = getattr(session.preprocessing_config, 'photometry', None) and session.preprocessing_config.photometry.apply_hpf
-    _det_label = "HPF z-ΔF/F" if _used_hpf else "z-ΔF/F"
+    _det_label = f"HPF {DFF_LABEL}" if _used_hpf else DFF_LABEL
     det_signal = proc.photometry.dff_hpf
     for i, prom in enumerate(prominences):
         ax = axes[2 + i]
@@ -289,12 +286,12 @@ def plot_transient_review(
         f"{session.mouse_id} S{session.heating_session} — transient review (baseline)",
         fontsize=10,
     )
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
 
     path = os.path.join(
         output_dir,
-        f"{session.mouse_id}_S{session.heating_session}_v3_transients.png",
+        f"{session.mouse_id}_S{session.heating_session}_transients.png",
     )
-    fig.savefig(path, dpi=150)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close("all")
     return path

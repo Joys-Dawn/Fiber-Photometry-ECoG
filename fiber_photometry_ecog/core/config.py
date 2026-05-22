@@ -22,7 +22,7 @@ class ECoGConfig:
 @dataclass
 class PhotometryConfig:
     """Photometry preprocessing parameters (shared across strategies)."""
-    strategy: str = "C"             # "A" (Chandni), "B" (Meiling), "C" (IRLS)
+    strategy: str = "C"             # "A" (Chandni), "B" (Meiling), "C" (IRLS), "D" (no isosbestic)
 
     # Strategy A: Gaussian smoothing
     gaussian_sigma: int = 75        # samples
@@ -86,6 +86,7 @@ TRANSIENT_CONFIGS = {
     "A": TransientConfig(min_prominence=1.0),
     "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
     "C": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
+    "D": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
 }
 
 
@@ -169,5 +170,5 @@ class AnalysisConfig:
     spike_triggered_window_s: float = 30.0  # seconds each side of spike
     spike_triggered_baseline_start_s: float = 5.0  # baseline begins this many seconds before event
     spike_triggered_baseline_end_s: float = 1.0    # baseline ends this many seconds before event
-    spike_triggered_auc_end_s: float = 10.0         # AUC integration window: 0 to this many seconds post-event
+    spike_triggered_auc_end_s: float = 30.0         # AUC integration window: 0 to this many seconds post-event (per spec)
     wide_triggered_window_s: float = 150.0          # per-cohort UEO plot (seconds each side)

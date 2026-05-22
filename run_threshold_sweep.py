@@ -36,8 +36,10 @@ from fiber_photometry_ecog.data_loading import (
     scan_experiment_folder, extract_date_from_oep, read_data_log,
 )
 from fiber_photometry_ecog.preprocessing.pipeline import preprocess_session
+from fiber_photometry_ecog.preprocessing.photometry import strategy_folder_name
 from fiber_photometry_ecog.preprocessing.spike_detection import detect_spikes
 from fiber_photometry_ecog.preprocessing.transient_detection import detect_transients
+from fiber_photometry_ecog.core.output_layout import ensure_layout
 from fiber_photometry_ecog.visualization.trace_plots import plot_sanity_check, plot_zoomed, plot_transient_review
 from fiber_photometry_ecog.analysis.cohort_characteristics import compute_cohort_characteristics
 from fiber_photometry_ecog.analysis.baseline_transients import compute_baseline_transients
@@ -55,6 +57,8 @@ from fiber_photometry_ecog.visualization.group_plots import (
     plot_preictal_mean_diagnostic,
     plot_preictal_transients,
     plot_ictal_mean,
+    plot_ueo_aligned_heatmaps,
+    plot_experimental_vs_isosbestic_spike_triggered,
     plot_ictal_transients,
     plot_postictal,
     plot_spike_triggered,
@@ -75,13 +79,23 @@ DATASETS = {
     "lc": EPHYS_ROOT / "LC_GCaMP",
 }
 
-STRATEGIES = ["A", "B", "C"]
+ALL_STRATEGIES = ["A", "B", "C", "D"]
+DEFAULT_STRATEGIES = ["C"]  # IRLS only by default; opt in to others via --strategies
 
 THRESHOLDS = {
     "A": [1.0, 1.5, 2.0, 2.5, 3.0],
     "B": [0.01, 0.015, 0.02, 0.025, 0.03, 0.035],
     "C": [0.01, 0.015, 0.02, 0.025, 0.03, 0.035],
+    "D": [0.01, 0.015, 0.02, 0.025, 0.03, 0.035],
 }
+
+# Default prominence per strategy — used for the final quality-check plots
+# and for group analysis when a session has no chosen prominence.
+DEFAULT_PROMINENCES = {"A": 2.5, "B": 0.03, "C": 0.03, "D": 0.03}
+
+
+def _default_prominence(strategy: str) -> float:
+    return DEFAULT_PROMINENCES[strategy.upper()]
 
 CACHE_DIR = Path("sweep_cache")
 
@@ -378,15 +392,33 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
 
 
 def run_sweep_for_session(session, strategy, ds_key, results_base):
-    """Preprocess (cached) then sweep all thresholds for one strategy."""
+    """Preprocess (cached) then sweep all thresholds for one strategy.
+
+    Layout produced:
+        preprocessing_<METHOD>/
+            quality check/
+                <mouse>_S<n>_full_trace.png    (at default prominence)
+                <mouse>_S<n>_peri_ictal.png    (at default prominence)
+                <mouse>_S<n>_transients.png    (v3, all thresholds overlay)
+                _sweep/<prom_label>/
+                    <mouse>_S<n>_transients.csv
+                    <mouse>_S<n>_full_trace.png
+                    <mouse>_S<n>_peri_ictal.png
+    """
     zdff_hpf, dff_for_detection, temp_smooth, fs = preprocess_and_cache(
         session, strategy, ds_key
     )
 
+    strategy_root = results_base / strategy_folder_name(strategy)
+    layout = ensure_layout(strategy_root)
+    qc_root = layout["quality_check"]
+    sweep_root = qc_root / "_sweep"
+    sweep_root.mkdir(parents=True, exist_ok=True)
+
     transients_by_prom = {}
     for threshold in THRESHOLDS[strategy]:
         label = _threshold_label(strategy, threshold)
-        out_dir = results_base / f"results_{strategy.lower()}" / label
+        out_dir = sweep_root / label
         out_dir.mkdir(parents=True, exist_ok=True)
 
         tc = _make_transient_config(strategy, threshold)
@@ -414,23 +446,33 @@ def run_sweep_for_session(session, strategy, ds_key, results_base):
                     f"{t.temperature_at_peak:.2f}" if t.temperature_at_peak is not None else "",
                 ])
 
-        # Plots v1 + v2
+        # Per-threshold quality check plots (audit trail)
         session.transients = transients
         plot_sanity_check(session, str(out_dir), transients)
         plot_zoomed(session, str(out_dir))
 
         log.info("    %s thresh=%s -> %d transients", strategy, label, len(transients))
 
-    # v3 transient review plot (all thresholds on one figure)
-    strategy_dir = str(results_base / f"results_{strategy.lower()}")
+    # Final per-session quality check plots at the chosen/default prominence.
+    chosen_prom = (session.transient_prominence
+                   if session.transient_prominence is not None
+                   else _default_prominence(strategy))
+    chosen_tc = _make_transient_config(strategy, chosen_prom)
+    final_transients = detect_transients(zdff_hpf, dff_for_detection, fs,
+                                         chosen_tc, temp_smooth)
+    session.transients = final_transients
+    plot_sanity_check(session, str(qc_root), final_transients)
+    plot_zoomed(session, str(qc_root))
+
+    # v3 transient review (all thresholds overlay) — directly in quality check/
     try:
         plot_transient_review(
-            session, strategy_dir,
+            session, str(qc_root),
             list(THRESHOLDS[strategy]),
             transients_by_prom,
         )
     except Exception as e:
-        log.error("    v3 plot failed for %s: %s", session.mouse_id, e)
+        log.error("    transient-review plot failed for %s: %s", session.mouse_id, e)
 
 
 def _ensure_spikes(session: Session):
@@ -455,7 +497,12 @@ def _ensure_spikes(session: Session):
 
 def run_group_analysis(sessions, strategy, ds_key, results_base):
     """Run all 8 group analysis modules and generate group plots."""
-    out_dir = str(results_base / f"results_{strategy.lower()}" / "group")
+    strategy_root = results_base / strategy_folder_name(strategy)
+    layout = ensure_layout(strategy_root)
+    means_dir = str(layout["means"])
+    transients_dir = str(layout["transients"])
+    param_dir = str(layout["parameter_detection"])
+    qc_dir = str(layout["quality_check"])
     config = AnalysisConfig()
 
     # Ensure all sessions have spikes detected
@@ -504,30 +551,34 @@ def run_group_analysis(sessions, strategy, ds_key, results_base):
         log.info("  No seizure durations available; falling back to "
                  "config.triggered_auc_end_s = %.1fs", config.triggered_auc_end_s)
 
-    # Per-cohort wide UEO triggered average (±150s)
+    # Per-cohort wide UEO triggered average (±150s) — mean signal
     try:
         wide_ueo = {}
         for cohort_name, cohort_sessions in cohort_groups.items():
             wide_ueo[cohort_name] = compute_wide_ueo_triggered(
                 cohort_sessions, window_s=config.wide_triggered_window_s)
-        plot_ueo_per_cohort(wide_ueo, out_dir)
+        plot_ueo_per_cohort(wide_ueo, means_dir)
         log.info("  Per-cohort UEO triggered: done")
     except Exception as e:
         log.error("  Per-cohort UEO triggered: FAILED -- %s", e)
         traceback.print_exc()
 
+    # (analysis_name, compute_fn, plot_fn, destination_dir)
     modules = [
-        ("Cohort characteristics", compute_cohort_characteristics, plot_cohort_characteristics),
-        ("Baseline transients", compute_baseline_transients, plot_baseline_transients),
-        ("Pre-ictal mean", compute_preictal_mean, plot_preictal_mean),
-        ("Pre-ictal transients", compute_preictal_transients, plot_preictal_transients),
-        ("Ictal mean", compute_ictal_mean, plot_ictal_mean),
-        ("Ictal transients", compute_ictal_transients, plot_ictal_transients),
-        ("Postictal", compute_postictal, plot_postictal),
-        ("Spike-triggered averages", None, plot_spike_triggered),
+        ("Cohort characteristics", compute_cohort_characteristics, plot_cohort_characteristics, means_dir),
+        ("Baseline transients", compute_baseline_transients, plot_baseline_transients, transients_dir),
+        ("Pre-ictal mean", compute_preictal_mean, plot_preictal_mean, means_dir),
+        ("Pre-ictal transients", compute_preictal_transients, plot_preictal_transients, transients_dir),
+        ("Ictal mean", compute_ictal_mean, plot_ictal_mean, means_dir),
+        ("Ictal transients", compute_ictal_transients, plot_ictal_transients, transients_dir),
+        ("Postictal", compute_postictal, plot_postictal, means_dir),
+        ("Spike-triggered averages", None, plot_spike_triggered, means_dir),
     ]
 
-    for name, compute_fn, plot_fn in modules:
+    ictal_results_by_cohort = {}
+    sta_cohort_sessions: Dict[str, list] = {}
+    sta_spike_times: Dict[str, list] = {}
+    for name, compute_fn, plot_fn, dest_dir in modules:
         try:
             results = {}
             for cohort_name, cohort_sessions in cohort_groups.items():
@@ -547,22 +598,52 @@ def run_group_analysis(sessions, strategy, ds_key, results_base):
                         np.array([sp.time for sp in s.spikes]) if s.spikes else np.array([])
                         for s in sta_sessions
                     ]
+                    sta_cohort_sessions[cohort_name] = sta_sessions
+                    sta_spike_times[cohort_name] = spike_times_list
                     results[cohort_name] = compute_spike_triggered_average(
                         sta_sessions, spike_times_list, config)
                 elif name == "Ictal mean":
+                    # Per spec D5: OFF AUC integrates over a fixed 100 s window
+                    # rather than cohort mean seizure duration. Other landmarks
+                    # (EEC/UEO/etc) continue to use cohort mean duration.
                     results[cohort_name] = compute_ictal_mean(
                         cohort_sessions, config,
                         auc_end_s_override=global_mean_duration,
+                        auc_end_s_per_landmark={"OFF": 100.0},
                     )
                 else:
                     results[cohort_name] = compute_fn(cohort_sessions, config)
-            plot_fn(results, out_dir)
+            plot_fn(results, dest_dir)
             log.info("  Group %s: done", name)
+            if name == "Ictal mean":
+                ictal_results_by_cohort = results
         except Exception as e:
             log.error("  Group %s: FAILED -- %s", name, e)
             traceback.print_exc()
 
-    # Pre-ictal mean diagnostic plot per session: bin windows + means + delta
+    # UEO-aligned heatmaps split by cohort (Phase 4e)
+    if ictal_results_by_cohort:
+        try:
+            paths = plot_ueo_aligned_heatmaps(ictal_results_by_cohort, means_dir)
+            for c, p in paths.items():
+                log.info("  UEO heatmap [%s]: %s", c, p)
+        except Exception as e:
+            log.error("  UEO heatmaps: FAILED -- %s", e)
+            traceback.print_exc()
+
+    # Experimental (470) vs isosbestic (405) overlay (Phase 2f)
+    if sta_cohort_sessions:
+        try:
+            p = plot_experimental_vs_isosbestic_spike_triggered(
+                sta_cohort_sessions, sta_spike_times, qc_dir
+            )
+            if p:
+                log.info("  470/405 spike overlay: %s", p)
+        except Exception as e:
+            log.error("  470/405 overlay: FAILED -- %s", e)
+            traceback.print_exc()
+
+    # Parameter-detection diagnostic per session: bin windows + means + delta
     # annotation overlaid on the trace, so every session's values are
     # auditable by eye.
     try:
@@ -574,10 +655,10 @@ def run_group_analysis(sessions, strategy, ds_key, results_base):
                     continue
                 if lm.ueo_time is None and getattr(lm, "equiv_ueo_time", None) is None:
                     continue
-                p = plot_preictal_mean_diagnostic(s, out_dir)
+                p = plot_preictal_mean_diagnostic(s, param_dir)
                 if p:
                     n_done += 1
-        log.info("  Pre-ictal diagnostic: wrote %d session plots", n_done)
+        log.info("  Parameter detection: wrote %d session plots", n_done)
     except Exception as e:
         log.error("  Pre-ictal diagnostic: FAILED -- %s", e)
         traceback.print_exc()
@@ -595,7 +676,18 @@ def main():
                         help="Delete preprocessing cache and recompute")
     parser.add_argument("--refresh-temp", action="store_true",
                         help="Recompute only temperature in cached .npz files (fast)")
+    parser.add_argument(
+        "--strategies", default=",".join(DEFAULT_STRATEGIES),
+        help=(f"Comma-separated subset of {ALL_STRATEGIES} to run. "
+              f"Default: {DEFAULT_STRATEGIES} (IRLS only)."),
+    )
     args = parser.parse_args()
+
+    strategies = [s.strip().upper() for s in args.strategies.split(",") if s.strip()]
+    unknown = [s for s in strategies if s not in ALL_STRATEGIES]
+    if unknown:
+        parser.error(f"Unknown strategies: {unknown}. Choose from {ALL_STRATEGIES}.")
+    log.info("Running strategies: %s", strategies)
 
     if args.clear_cache and CACHE_DIR.exists():
         import shutil
@@ -610,7 +702,7 @@ def main():
             sessions = load_sessions(ds_path, test_mode=args.test)
             for session in sessions:
                 sk = _session_key(session)
-                for strategy in STRATEGIES:
+                for strategy in strategies:
                     path = _cache_path(ds_key, strategy, sk)
                     if not path.exists():
                         continue
@@ -642,7 +734,7 @@ def main():
 
         results_base = results_root / f"results_{ds_key}"
 
-        for strategy in STRATEGIES:
+        for strategy in strategies:
             log.info("-" * 40)
             log.info("Strategy %s", strategy)
             log.info("-" * 40)
@@ -664,12 +756,7 @@ def main():
                 # (run_sweep_for_session already did this, but sessions may
                 # have been modified by sweep iterations — re-apply default
                 # threshold transients)
-                GROUP_THRESHOLDS = {
-                    "A": _make_transient_config("A", 2.5),
-                    "B": _make_transient_config("B", 0.03),
-                    "C": _make_transient_config("C", 0.03),
-                }
-                default_tc = GROUP_THRESHOLDS[strategy]
+                default_tc = _make_transient_config(strategy, _default_prominence(strategy))
                 for session in sessions:
                     zdff_hpf, dff_for_det, temp_smooth, fs = preprocess_and_cache(
                         session, strategy, ds_key)

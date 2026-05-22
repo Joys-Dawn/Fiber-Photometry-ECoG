@@ -17,6 +17,7 @@ from .photometry import (
     ChandniStrategy,
     MeilingStrategy,
     IRLSStrategy,
+    NoIsosbesticStrategy,
     z_score_baseline,
     highpass_filter,
     detrend_moving_average,
@@ -26,6 +27,7 @@ STRATEGY_MAP = {
     "A": ChandniStrategy,
     "B": MeilingStrategy,
     "C": IRLSStrategy,
+    "D": NoIsosbesticStrategy,
 }
 
 
