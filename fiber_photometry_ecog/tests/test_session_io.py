@@ -96,7 +96,7 @@ def _make_session() -> Session:
         processed=proc,
         transients=transients,
         spikes=spikes,
-        cohort="seizure",
+        cohort="DS_sz",
         date="2024-06-05",
         session_name="3339_session1",
     )
@@ -191,7 +191,7 @@ class TestSessionIoRoundTrip:
         """Verify that saved files load without allow_pickle=True."""
         session = _make_session()
         path = save_session(session, tmp_path)
-        # This should not raise — no pickle objects in the file
+        # This should not raise - no pickle objects in the file
         data = np.load(path)
         assert "_metadata_json" in data
         data.close()

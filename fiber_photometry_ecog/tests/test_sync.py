@@ -68,7 +68,7 @@ def make_synthetic_oep(
     fs: float = 1000.0,
     pulse_interval: float = 10.0,
 ) -> OEPData:
-    """Create a synthetic OEPData with known TTL pulses (no drift — reference clock)."""
+    """Create a synthetic OEPData with known TTL pulses (no drift - reference clock)."""
     n_samples = int(duration_s * fs)
 
     # Synthetic ECoG: noise
@@ -160,7 +160,7 @@ class TestSyncNoDrift:
         """A slow sine wave should survive sync with low distortion."""
         np.random.seed(42)
         ppd = make_synthetic_ppd(drift_ppm=0.0, duration_s=120.0)
-        freq = 0.5  # Hz — well below Nyquist of 130 Hz photometry
+        freq = 0.5  # Hz - well below Nyquist of 130 Hz photometry
         ppd.signal_470 = np.sin(2 * np.pi * freq * ppd.time)
         oep = make_synthetic_oep(duration_s=120.0)
         result = synchronize(ppd, oep)
@@ -205,7 +205,7 @@ class TestSyncNoDrift:
         oep = make_synthetic_oep()
         result = synchronize(ppd, oep)
         assert len(result.temperature_raw) == len(result.ecog)
-        # Synthetic temp is a linear ramp — should stay monotonic
+        # Synthetic temp is a linear ramp - should stay monotonic
         diffs = np.diff(result.temperature_raw)
         assert np.all(diffs >= 0)
 
@@ -224,7 +224,7 @@ class TestSyncWithDrift:
         assert result.residual_ms < 50
 
     def test_large_drift(self):
-        """Inject 500 ppm drift (0.05%) — should still sync."""
+        """Inject 500 ppm drift (0.05%) - should still sync."""
         ppd = make_synthetic_ppd(drift_ppm=500.0)
         oep = make_synthetic_oep()
         result = synchronize(ppd, oep)
@@ -241,7 +241,7 @@ class TestSyncWithDrift:
 
 class TestSyncTimeOffset:
     def test_photo_starts_later(self):
-        """Photometry starts 5s after EEG — should still sync."""
+        """Photometry starts 5s after EEG - should still sync."""
         ppd = make_synthetic_ppd(duration_s=120.0, pulse_interval=10.0)
         # Shift photometry pulse times forward by 5s
         ppd.time = ppd.time + 5.0
@@ -252,7 +252,7 @@ class TestSyncTimeOffset:
         assert len(result.signal_470) == len(result.ecog)
 
     def test_eeg_starts_later(self):
-        """EEG starts 5s after photometry — should still sync."""
+        """EEG starts 5s after photometry - should still sync."""
         ppd = make_synthetic_ppd(duration_s=120.0, pulse_interval=10.0)
         oep = make_synthetic_oep(duration_s=120.0, pulse_interval=10.0)
         # Shift EEG pulse times forward by 5s

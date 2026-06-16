@@ -112,7 +112,7 @@ def compute_ictal_transients(
         all_amp_ma.append(amps)
         all_hw_ma.append(hws)
 
-    # Group PSTH — spec calls for frequency (Hz), so divide counts by bin width
+    # Group PSTH - spec calls for frequency (Hz), so divide counts by bin width
     count_mat = np.array(all_counts)
     freq_mat = count_mat / bin_size
     per_session_psth_freq = [freq_mat[i] for i in range(freq_mat.shape[0])]

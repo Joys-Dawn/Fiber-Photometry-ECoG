@@ -126,7 +126,16 @@ def _sliding_window_transients_by_temp(
     if fs is None or fs <= 0:
         return np.array([]), np.array([]), np.array([]), np.array([])
 
+    # No-temperature sessions (PTZ paradigm) have all-NaN temperature_smooth
+    # and ueo_temp=None. Skip the temperature-binned panel entirely - the
+    # caller treats empty arrays as "no data" and won't plot.
+    if ueo_temp is None:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
     temp = np.asarray(session.processed.temperature_smooth)
+    if np.all(np.isnan(temp)):
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
     i0 = max(0, int(heat_start * fs))
     i1 = min(len(temp), int(ueo_t * fs))
     if i1 <= i0:
@@ -168,13 +177,19 @@ def _bin_transients_by_temperature(
     """Bin transient properties by temperature relative to seizure onset.
 
     Returns (frequency_per_bin, amplitude_per_bin, half_width_per_bin).
-    Frequency is count per bin (not normalized by time — consistent across sessions
+    Frequency is count per bin (not normalized by time - consistent across sessions
     since temperature bins represent similar temp ranges).
     """
     n_bins = len(bin_edges) - 1
     counts = np.zeros(n_bins)
     amp_sums = np.zeros(n_bins)
     hw_sums = np.zeros(n_bins)
+
+    # No-temperature paradigm (PTZ): ueo_temp is None, every transient has
+    # temperature_at_peak=None. Return zero counts + NaN per bin so the
+    # group aggregator still gets a row of the right shape.
+    if ueo_temp is None:
+        return counts, np.full(n_bins, np.nan), np.full(n_bins, np.nan)
 
     for t in transients:
         if t.temperature_at_peak is None:

@@ -124,11 +124,17 @@ def compute_preictal_mean(
         if ictal_mean is not None:
             ictal_means.append(ictal_mean)
 
-        # Temperature-binned: heating portion, relative to seizure onset temp
-        heat_signal = signal[i_heat:i_ueo]
-        heat_temp = temperature[i_heat:i_ueo]
-        temp_relative = heat_temp - ueo_temp  # relative to seizure onset
-        temp_bin_vals = bin_signal_by_temperature(heat_signal, temp_relative, bin_edges)
+        # Temperature-binned: heating portion, relative to seizure onset temp.
+        # When the session has no temperature (PTZ paradigm), ueo_temp is
+        # None and `temperature` is all-NaN - skip the temp-binned panel and
+        # emit a NaN bin row so the per-session means above still land.
+        if ueo_temp is None or np.all(np.isnan(temperature)):
+            temp_bin_vals = np.full(len(bin_centers), np.nan)
+        else:
+            heat_signal = signal[i_heat:i_ueo]
+            heat_temp = temperature[i_heat:i_ueo]
+            temp_relative = heat_temp - ueo_temp  # relative to seizure onset
+            temp_bin_vals = bin_signal_by_temperature(heat_signal, temp_relative, bin_edges)
         all_temp_bins.append(temp_bin_vals)
 
         session_results.append(PreictalMeanSessionResult(

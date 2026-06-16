@@ -187,6 +187,7 @@ def read_oep(
     temperature_stream_idx: Optional[int] = None,
     ecog_stream_idx: int = 0,
     recording_num: int = 1,
+    has_temperature: bool = True,
 ) -> OEPData:
     """Read an Open Ephys binary recording session.
 
@@ -211,6 +212,12 @@ def read_oep(
         channel. Ignored unless `temperature_channel` is given.
     ecog_stream_idx : 0-indexed stream for ECoG data (default 0)
     recording_num : which recording to load (default 1)
+    has_temperature : if False, no temperature probe was connected for this
+        recording (e.g. PTZ-evoked seizure paradigm). The temperature stream
+        is not read; `temperature_raw` is returned as NaN-filled and slope /
+        intercept / bit_volts are NaN. Downstream code treats NaN
+        temperature gracefully (analyses produce NaN landmarks and empty
+        plots rather than crashing).
 
     Returns
     -------
@@ -264,6 +271,30 @@ def read_oep(
         emg_signal *= emg_bit_volts
 
     # --- Load temperature ---
+    if not has_temperature:
+        # No probe was connected for this recording - short-circuit and
+        # return a NaN-filled temperature trace + NaN calibration. Downstream
+        # code is nan-aware (process_temperature, _scatter_mean_sem, etc.).
+        logger.info("Temperature: skipped (has_temperature=False)")
+        n_samples = ecog_signal.shape[0]
+        # Read TTL up front so the early return still has it.
+        ttl_sample_numbers, ttl_states, ttl_timestamps = _load_ttl_events(rec_dir, oebin)
+        return OEPData(
+            ecog=ecog_signal,
+            emg=emg_signal,
+            temperature_raw=np.full(n_samples, np.nan, dtype=np.float64),
+            temp_bit_volts=float("nan"),
+            temp_slope=float("nan"),
+            temp_intercept=float("nan"),
+            fs=fs,
+            sample_numbers=sample_numbers,
+            timestamps=timestamps,
+            ttl_sample_numbers=ttl_sample_numbers,
+            ttl_states=ttl_states,
+            ttl_timestamps=ttl_timestamps,
+            metadata=oebin,
+        )
+
     temp_cfg = TemperatureConfig()
     nidaq_idx = _find_nidaq_stream(continuous_streams)
 

@@ -1,5 +1,5 @@
 """
-Strategy A — Chandni's photometry preprocessing.
+Strategy A - Chandni's photometry preprocessing.
 
 1. Gaussian smoothing (sigma=75 samples) on both 470 and 405 channels
    via filtfilt with Gaussian kernel (zero-phase, applied forward+backward)

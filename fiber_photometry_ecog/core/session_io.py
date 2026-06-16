@@ -8,7 +8,7 @@ preprocessing results can coexist for the same sessions.
 Each file contains all arrays (raw + processed) and a JSON string with
 scalar metadata, landmarks, transients, spikes, and preprocessing config.
 
-This keeps the results directory clean — .sessions/ is internal state,
+This keeps the results directory clean - .sessions/ is internal state,
 results/ is user-facing output.
 """
 

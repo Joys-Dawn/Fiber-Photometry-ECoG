@@ -1,5 +1,5 @@
 """
-Core preprocessing pipeline — no GUI dependencies.
+Core preprocessing pipeline - no GUI dependencies.
 
 Single entry point: preprocess_session(session, config) applies temperature,
 ECoG, photometry, transient detection, and spike detection to a Session in-place.
@@ -88,7 +88,11 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
 
     # Transient stream: detrend, then baseline z-score
     if not config.photometry.apply_hpf:
-        phot_result.dff_hpf = None
+        # No HPF/detrend: peak detection runs on the z-scored dF/F (so the
+        # prominence threshold stays in z-units), but properties (amplitude,
+        # half-width) are measured on raw dF/F so threshold calibrations
+        # are preserved.
+        phot_result.dff_hpf = phot_result.dff_zscore
         dff_for_detection = phot_result.dff
     elif strategy_name == "A":
         # Strategy A: HPF then baseline z-score (PASTa/Donka 2025)

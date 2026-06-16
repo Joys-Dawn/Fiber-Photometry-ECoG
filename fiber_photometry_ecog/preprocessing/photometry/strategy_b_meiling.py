@@ -1,5 +1,5 @@
 """
-Strategy B — Meiling's photometry preprocessing.
+Strategy B - Meiling's photometry preprocessing.
 
 1. Butterworth low-pass (4th order, 10 Hz) on both channels
 2. Biexponential fit on each channel -> subtract (photobleaching correction)

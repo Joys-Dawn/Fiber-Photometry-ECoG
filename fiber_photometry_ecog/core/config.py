@@ -36,7 +36,7 @@ class PhotometryConfig:
     irls_max_iter: int = 50         # max IRLS iterations
     irls_tol: float = 1e-6          # convergence tolerance
 
-    # Biexponential fit (Strategy B only — Strategy C per Keevers 2025 does not detrend)
+    # Biexponential fit (Strategy B only - Strategy C per Keevers 2025 does not detrend)
     biexp_crop_s: float = 120.0     # seconds to crop from start if fit fails
 
     # Post-processing
@@ -46,7 +46,11 @@ class PhotometryConfig:
     hpf_order: int = 2             # Butterworth order
     # Strategy B/C detrending: moving-average subtraction (per Wallace 2025)
     detrend_window_s: float = 100.0  # seconds; moving-average window
-    apply_hpf: bool = True           # False to skip HPF/detrend (no transient stream)
+    # HPF/detrend is OFF by default: peak detection runs on the z-scored dF/F
+    # directly, with prominence/amplitude measured on raw dF/F so threshold
+    # calibrations stay consistent. Set True only if you need the Strategy-A
+    # HPF or Strategy-B/C moving-average detrend.
+    apply_hpf: bool = False
 
 
 @dataclass
@@ -67,7 +71,7 @@ class TransientConfig:
     """Transient detection parameters.
 
     method="prominence": scipy find_peaks with prominence (Chandni's original).
-    method="wallace": two-step — height gate then prominence filter
+    method="wallace": two-step - height gate then prominence filter
         (Wallace 2025 ProM: findpeaks height>=1.0, then prominence>=2).
     """
     method: str = "prominence"       # "prominence" or "wallace"
@@ -78,8 +82,8 @@ class TransientConfig:
 
 
 # Strategy-specific defaults.
-# A: Chandni's original — prominence=1.0 on z-scored HPF signal (per detect_transients.m)
-# B/C: Wallace 2025 ProM — height>=1.0 on z-scored, then prominence on raw dF/F.
+# A: Chandni's original - prominence=1.0 on z-scored HPF signal (per detect_transients.m)
+# B/C: Wallace 2025 ProM - height>=1.0 on z-scored, then prominence on raw dF/F.
 #   Wallace used prominence=2.0 but on %dF/F in percentage scale (dLight sensor).
 #   Our dF/F is fractional (0.08 = 8%), so 0.02 = 2 percentage points equivalent.
 TRANSIENT_CONFIGS = {
@@ -157,7 +161,9 @@ class AnalysisConfig:
     triggered_window_s: float = 65.0        # seconds each side of event
     triggered_baseline_start_s: float = 5.0 # baseline begins this many seconds before event
     triggered_baseline_end_s: float = 1.0   # baseline ends this many seconds before event
-    triggered_auc_end_s: float = 60.0       # AUC: 0 to this many seconds post-event
+    # Triggered-AUC integration window is the mean seizure duration computed
+    # at the driver level (see analysis.ictal_mean.mean_seizure_duration);
+    # no static default lives in the config.
     # PSTH
     psth_bin_size_s: float = 10.0           # seconds per bin
     psth_window_s: float = 60.0             # seconds each side of UEO

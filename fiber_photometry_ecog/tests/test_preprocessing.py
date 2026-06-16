@@ -530,7 +530,7 @@ class TestStrategyC:
         n = int(fs * 600)
         t = np.arange(n) / fs
 
-        # Shared slow motion (iso predictor) — large amplitude
+        # Shared slow motion (iso predictor) - large amplitude
         iso = 0.5 * np.sin(2 * np.pi * 0.05 * t)
         # True coupling: slope=1.0
         sig = iso.copy() + 0.005 * np.random.randn(n)
@@ -570,7 +570,7 @@ class TestStrategyC:
         np.random.seed(42)
         s470, s405, _ = make_photometry_pair(duration=300.0)
         result = preprocess_irls(s470, s405, 130.0)
-        # dF/F should be small when signals are similar — fitted_iso
+        # dF/F should be small when signals are similar - fitted_iso
         # is on the same scale as filt_470 (both ~1-3 range), so
         # (filt_470 - fitted_iso) / fitted_iso should be near 0
         assert np.mean(np.abs(result.dff)) < 0.5

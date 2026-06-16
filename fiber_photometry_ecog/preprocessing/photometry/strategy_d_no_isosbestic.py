@@ -1,5 +1,5 @@
 """
-Strategy D — Photometry preprocessing without isosbestic correction.
+Strategy D - Photometry preprocessing without isosbestic correction.
 
 For sensors where no isosbestic wavelength is known or available (e.g. some
 non-GCaMP indicators). The 405 channel is ignored entirely; the 470 channel
@@ -35,7 +35,7 @@ class NoIsosbesticStrategy:
         Parameters
         ----------
         signal_470 : experimental fluorescence channel
-        signal_405 : isosbestic channel — IGNORED
+        signal_405 : isosbestic channel - IGNORED
         fs : sampling rate (Hz)
         config : photometry parameters (uses defaults if None)
 
@@ -56,7 +56,7 @@ class NoIsosbesticStrategy:
 
         if np.any(expfit_470 <= 0):
             raise ValueError(
-                "Biexponential fit of 470 crosses zero — dF/F is undefined. "
+                "Biexponential fit of 470 crosses zero - dF/F is undefined. "
                 f"min(expfit_470)={expfit_470.min():.6f}"
             )
 

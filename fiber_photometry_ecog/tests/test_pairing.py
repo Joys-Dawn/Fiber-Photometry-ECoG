@@ -161,7 +161,7 @@ class TestFindFirstTimeAtTemp:
 
     def test_returns_first_occurrence(self):
         fs = 10.0
-        # Ramp up then down — target temp appears twice; should return first
+        # Ramp up then down - target temp appears twice; should return first
         up = np.linspace(36.0, 43.0, 50)
         down = np.linspace(43.0, 36.0, 50)
         trace = np.concatenate([up, down])

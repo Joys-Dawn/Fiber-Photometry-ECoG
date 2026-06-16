@@ -70,24 +70,33 @@ def compute_postictal(
         signal, time, fs = get_signal_and_time(s)
         temperature = get_temperature(s)
 
-        # Find peak temperature index (start of cooling). nanargmax so
-        # thermistor dropouts (NaN) don't masquerade as the peak — the real
-        # peak still exists in the trace, np.argmax just can't see past NaN.
-        max_idx = int(np.nanargmax(temperature))
-        max_temp = float(temperature[max_idx])
+        # No-temperature paradigm (PTZ): every sample is NaN, so there is
+        # no cooling phase to bin. Emit a NaN row so the group aggregator
+        # still gets a matrix of the right shape, and fall back to the
+        # whole trace for the final-window stats.
+        if np.all(np.isnan(temperature)):
+            cooling_binned = np.full(len(bin_centers), np.nan)
+        else:
+            # Find peak temperature index (start of cooling). nanargmax so
+            # thermistor dropouts (NaN) don't masquerade as the peak - the real
+            # peak still exists in the trace, np.argmax just can't see past NaN.
+            max_idx = int(np.nanargmax(temperature))
+            max_temp = float(temperature[max_idx])
 
-        # Cooling portion: from max temp to end
-        cool_signal = signal[max_idx:]
-        cool_temp = temperature[max_idx:]
+            # Cooling portion: from max temp to end
+            cool_signal = signal[max_idx:]
+            cool_temp = temperature[max_idx:]
 
-        # Relative to max temperature (per spec: "temp rel to max")
-        cool_temp_rel = cool_temp - max_temp
-        cooling_binned = bin_signal_by_temperature(cool_signal, cool_temp_rel, bin_edges)
+            # Relative to max temperature (per spec: "temp rel to max")
+            cool_temp_rel = cool_temp - max_temp
+            cooling_binned = bin_signal_by_temperature(cool_signal, cool_temp_rel, bin_edges)
         all_cooling.append(cooling_binned)
 
-        # Final recording metrics (post-seizure time)
+        # Final recording metrics (post-seizure time). off_t may be None for
+        # control sessions with no equivalent OFF in the log - record NaN
+        # for final_time in that case rather than crashing.
         off_t = get_off_time(s)
-        final_time = float(time[-1]) - off_t
+        final_time = float(time[-1]) - off_t if off_t is not None else np.nan
         valid_temp = temperature[~np.isnan(temperature)]
         final_temp_val = float(valid_temp[-1]) if len(valid_temp) > 0 else np.nan
         # Mean z-ΔF/F over last 30 seconds of recording

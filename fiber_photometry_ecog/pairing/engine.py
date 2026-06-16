@@ -82,7 +82,7 @@ def compute_seizure_group_means(
             beh_times.append(lm.behavioral_onset_time - heat_start)
 
         # Use pre-computed landmark temperatures (already NaN-filtered by
-        # pipeline.py — None means thermistor dropout at that time).
+        # pipeline.py - None means thermistor dropout at that time).
         if lm.eec_temp is not None:
             eec_temps.append(lm.eec_temp)
         if lm.ueo_temp is not None:

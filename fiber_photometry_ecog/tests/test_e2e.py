@@ -52,13 +52,13 @@ from fiber_photometry_ecog.visualization import (
 )
 
 # --- Test sessions (one per cohort) ---
-# Landmark times are approximate — real values would come from user marking on GUI.
+# Landmark times are approximate - real values would come from user marking on GUI.
 # These are plausible for a ~15-20 min heating experiment with seizure around 42°C.
 _DATA = _REPO_ROOT / "Chandni_data"
 
 TEST_SESSIONS = [
     {
-        "cohort": "seizure",
+        "cohort": "DS_sz",
         "mouse_id": "3331",
         "genotype": "Scn1a",
         "n_seizures": 1,
@@ -70,7 +70,7 @@ TEST_SESSIONS = [
         "oep": str(_DATA / "Scn1a_seizure/3331_session1/2024-10-22_21-57-43_3331"),
     },
     {
-        "cohort": "failed_seizure",
+        "cohort": "DS_no_sz",
         "mouse_id": "3339",
         "genotype": "Scn1a",
         "n_seizures": 0,
@@ -79,7 +79,7 @@ TEST_SESSIONS = [
         "oep": str(_DATA / "Scn1a_no_seizure/3339_session1/2024-10-22_23-11-27_3339"),
     },
     {
-        "cohort": "wt",
+        "cohort": "WT_no_sz",
         "mouse_id": "3330",
         "genotype": "WT",
         "n_seizures": 0,
@@ -153,8 +153,8 @@ def run_analysis(cohorts: dict, config: AnalysisConfig, output_dir: Path) -> Non
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Pairing
-    seizure_sessions = cohorts.get("seizure", [])
-    control_sessions = cohorts.get("failed_seizure", []) + cohorts.get("wt", [])
+    seizure_sessions = cohorts.get("DS_sz", []) + cohorts.get("WT_sz", [])
+    control_sessions = cohorts.get("DS_no_sz", []) + cohorts.get("WT_no_sz", [])
 
     # Pairing requires seizure landmarks (EEC/UEO/OFF) which are user-entered.
     # Skip if landmarks are missing.
@@ -167,7 +167,7 @@ def run_analysis(cohorts: dict, config: AnalysisConfig, output_dir: Path) -> Non
         assign_all_controls(seizure_sessions, control_sessions, mode="temperature")
         logger.info("  Pairing complete")
     else:
-        logger.info("Skipping pairing (no seizure landmarks set — would be entered via GUI)")
+        logger.info("Skipping pairing (no seizure landmarks set - would be entered via GUI)")
 
     # Analysis modules
     all_sessions = {name: sessions for name, sessions in cohorts.items() if sessions}
@@ -231,7 +231,7 @@ def _run_postictal(all_sessions, config, output_dir):
 def run_e2e(strategy_name: str = "A"):
     """Run full end-to-end pipeline."""
     logger.info(f"{'='*60}")
-    logger.info(f"E2E TEST — Strategy {strategy_name}")
+    logger.info(f"E2E TEST - Strategy {strategy_name}")
     logger.info(f"{'='*60}")
 
     output = OUTPUT_DIR / f"strategy_{strategy_name}"
@@ -267,7 +267,7 @@ def run_e2e(strategy_name: str = "A"):
 
     # Summary
     logger.info(f"\n{'='*60}")
-    logger.info(f"E2E COMPLETE — Strategy {strategy_name}")
+    logger.info(f"E2E COMPLETE - Strategy {strategy_name}")
     logger.info(f"Output: {output}")
     generated = list(output.rglob("*.png")) + list(output.rglob("*.csv"))
     logger.info(f"Generated: {len(generated)} files")

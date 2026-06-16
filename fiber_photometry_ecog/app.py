@@ -1,10 +1,10 @@
 """
-Fiber Photometry & ECoG Analysis Tool — Tkinter GUI.
+Fiber Photometry & ECoG Analysis Tool - Tkinter GUI.
 
 Three-tab interface following the EphysAutomatedAnalysis pattern:
-  Tab 1 — Data Loading & Cohort Management
-  Tab 2 — Preprocessing
-  Tab 3 — Extraction
+  Tab 1 - Data Loading & Cohort Management
+  Tab 2 - Preprocessing
+  Tab 3 - Extraction
 """
 
 import logging
@@ -26,6 +26,7 @@ from .core.config import (
     PhotometryConfig,
     PreprocessingConfig,
 )
+from .core.cohort import classify_from_metadata, classify_session
 from .core.data_models import (
     RawData,
     Session,
@@ -52,7 +53,9 @@ from .analysis import (
     compute_ictal_transients,
     compute_postictal,
     compute_spike_triggered_average,
+    compute_wide_ueo_triggered,
 )
+from .analysis.ictal_mean import mean_seizure_duration
 from .visualization import (
     plot_sanity_check,
     plot_zoomed,
@@ -69,6 +72,8 @@ from .visualization import (
     plot_ueo_aligned_heatmaps,
     plot_experimental_vs_isosbestic_spike_triggered,
 )
+from .visualization.colors import COHORT_DISPLAY_LABELS
+from .statistics import StatsConfig, run_group_comparisons
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -119,6 +124,13 @@ class FiberPhotometryApp:
         self.output_dir = Path("Results")
         self.running = False
 
+        # Populated by the Extraction worker; consumed by the Statistics tab.
+        # None until the user has run extraction at least once.
+        self.cohort_module_results: Optional[Dict[str, Dict[str, object]]] = None
+        self.cohort_groups_for_stats: Optional[Dict[str, List[Session]]] = None
+        self.stats_means_dir: Optional[str] = None
+        self.stats_transients_dir: Optional[str] = None
+
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -140,10 +152,14 @@ class FiberPhotometryApp:
         notebook.add(tab3, text="Extraction")
         self._setup_extraction_tab(tab3)
 
+        tab4 = ttk.Frame(notebook)
+        notebook.add(tab4, text="Statistics")
+        self._setup_statistics_tab(tab4)
+
         notebook.pack(expand=True, fill="both", padx=10, pady=10)
 
     # ==================================================================
-    # TAB 1 — Data Loading & Cohort Management
+    # TAB 1 - Data Loading & Cohort Management
     # ==================================================================
 
     def _setup_loading_tab(self, parent: ttk.Frame) -> None:
@@ -162,7 +178,7 @@ class FiberPhotometryApp:
         # Channel defaults (editable, applied to all sessions)
         ch_frame = ttk.Frame(folder_frame)
         ch_frame.pack(fill="x", pady=2)
-        ttk.Label(ch_frame, text="Channels —").pack(side="left")
+        ttk.Label(ch_frame, text="Channels -").pack(side="left")
         ttk.Label(ch_frame, text="ECoG:").pack(side="left", padx=(5, 0))
         self.ecog_ch_var = tk.StringVar(value="2")
         ttk.Entry(ch_frame, textvariable=self.ecog_ch_var, width=4).pack(side="left", padx=(2, 10))
@@ -213,7 +229,7 @@ class FiberPhotometryApp:
         self._discovered_sessions: List[Dict] = []
 
     # ==================================================================
-    # TAB 2 — Preprocessing
+    # TAB 2 - Preprocessing
     # ==================================================================
 
     def _setup_preprocessing_tab(self, parent: ttk.Frame) -> None:
@@ -275,10 +291,10 @@ class FiberPhotometryApp:
         # Current landmark values display
         lm_vals = ttk.Frame(mark_frame)
         lm_vals.pack(fill="x", pady=2)
-        self.eec_val_var = tk.StringVar(value="EEC: —")
-        self.ueo_val_var = tk.StringVar(value="UEO: —")
-        self.behav_val_var = tk.StringVar(value="Behavioral onset: —")
-        self.off_val_var = tk.StringVar(value="OFF: —")
+        self.eec_val_var = tk.StringVar(value="EEC: -")
+        self.ueo_val_var = tk.StringVar(value="UEO: -")
+        self.behav_val_var = tk.StringVar(value="Behavioral onset: -")
+        self.off_val_var = tk.StringVar(value="OFF: -")
         for var in [self.eec_val_var, self.ueo_val_var, self.behav_val_var, self.off_val_var]:
             ttk.Label(lm_vals, textvariable=var, width=22).pack(side="left", padx=5)
 
@@ -305,7 +321,7 @@ class FiberPhotometryApp:
         self._marking_session_idx: Optional[int] = None
 
     # ==================================================================
-    # TAB 3 — Extraction
+    # TAB 3 - Extraction
     # ==================================================================
 
     def _setup_extraction_tab(self, parent: ttk.Frame) -> None:
@@ -317,6 +333,34 @@ class FiberPhotometryApp:
         self.pairing_mode_var = tk.StringVar(value="temperature")
         ttk.Combobox(pair_frame, textvariable=self.pairing_mode_var,
                       values=["temperature", "time"], state="readonly", width=14).pack(side="left", padx=5)
+
+        # --- Cohorts to compare ---
+        # Drives plot filtering: every multi-cohort plot produced by extraction
+        # is restricted to the ticked cohorts. Per-session diagnostics
+        # (parameter detection, quality check) ignore the selection. The same
+        # set is also written into the Statistics-tab checkboxes after a run
+        # so the default Run there matches what was just plotted.
+        cmp_frame = ttk.LabelFrame(parent, text="Cohorts to compare", padding=10)
+        cmp_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(
+            cmp_frame,
+            text=("Restricts all multi-cohort plots to these cohorts. "
+                  "Per-session quality / parameter-detection plots are unaffected."),
+            foreground="#555",
+        ).pack(anchor="w", pady=(0, 5))
+        self.compare_cohort_vars: Dict[str, tk.BooleanVar] = {
+            "DS_sz":    tk.BooleanVar(value=True),
+            "DS_no_sz": tk.BooleanVar(value=False),
+            "WT_sz":    tk.BooleanVar(value=False),
+            "WT_no_sz": tk.BooleanVar(value=True),
+        }
+        cmp_row = ttk.Frame(cmp_frame)
+        cmp_row.pack(fill="x")
+        for key, var in self.compare_cohort_vars.items():
+            label = f"{key}  ({COHORT_DISPLAY_LABELS.get(key, key)})"
+            ttk.Checkbutton(cmp_row, text=label, variable=var).pack(
+                side="left", padx=10
+            )
 
         # --- Run button + progress ---
         btn_frame = ttk.Frame(parent)
@@ -336,6 +380,149 @@ class FiberPhotometryApp:
         self.extract_log.configure(yscrollcommand=log_scroll.set)
         self.extract_log.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
+
+    # ==================================================================
+    # TAB 4 - Statistics
+    # ==================================================================
+
+    def _setup_statistics_tab(self, parent: ttk.Frame) -> None:
+        # Cohort selection
+        cohort_frame = ttk.LabelFrame(parent, text="Cohorts to compare", padding=10)
+        cohort_frame.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(
+            cohort_frame,
+            text="Pick 2+ cohorts. 2 → unpaired test, ≥3 → ANOVA/Kruskal-Wallis + pairwise.\n"
+                 "Only cohorts present in the loaded data will actually appear in the output.",
+            foreground="#555",
+        ).pack(anchor="w", pady=(0, 5))
+
+        # 4 checkboxes - one per cohort key, ordered DS first then WT.
+        # Defaults to the primary DS_sz vs WT_no_sz hyperthermia comparison.
+        self.stats_cohort_vars: Dict[str, tk.BooleanVar] = {
+            "DS_sz":    tk.BooleanVar(value=True),
+            "DS_no_sz": tk.BooleanVar(value=False),
+            "WT_sz":    tk.BooleanVar(value=False),
+            "WT_no_sz": tk.BooleanVar(value=True),
+        }
+        check_row = ttk.Frame(cohort_frame)
+        check_row.pack(fill="x")
+        for key, var in self.stats_cohort_vars.items():
+            label = f"{key}  ({COHORT_DISPLAY_LABELS.get(key, key)})"
+            ttk.Checkbutton(check_row, text=label, variable=var).pack(
+                side="left", padx=10
+            )
+
+        # Status line - populated after extraction with available cohort sizes.
+        self.stats_status_var = tk.StringVar(
+            value="Run Extraction first; per-cohort sizes will appear here."
+        )
+        ttk.Label(parent, textvariable=self.stats_status_var,
+                  foreground="#444").pack(anchor="w", padx=10, pady=(5, 0))
+
+        # Run button
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", padx=5, pady=10)
+        ttk.Button(btn_frame, text="Run Statistics",
+                   command=self._run_statistics, width=25).pack(anchor="center")
+
+        self.stats_progress_label = ttk.Label(parent, text="Ready")
+        self.stats_progress_label.pack()
+
+        # Log
+        log_frame = ttk.LabelFrame(parent, text="Statistics Log", padding=5)
+        log_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.stats_log = tk.Text(log_frame, height=12, state="disabled",
+                                  font=("Consolas", 9))
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical",
+                                    command=self.stats_log.yview)
+        self.stats_log.configure(yscrollcommand=log_scroll.set)
+        self.stats_log.pack(side="left", fill="both", expand=True)
+        log_scroll.pack(side="right", fill="y")
+
+    def _log_stats(self, msg: str) -> None:
+        self.root.after(0, lambda: self._log(self.stats_log, msg))
+
+    def _refresh_stats_status(self) -> None:
+        """Update the stats-tab status line with per-cohort sizes."""
+        groups = self.cohort_groups_for_stats
+        if not groups:
+            self.stats_status_var.set(
+                "Run Extraction first; per-cohort sizes will appear here."
+            )
+            return
+        sizes = ", ".join(
+            f"{k}={len(v)}" for k, v in groups.items() if v
+        ) or "(no sessions)"
+        self.stats_status_var.set(f"Available cohorts: {sizes}")
+
+    def _run_statistics(self) -> None:
+        if self.cohort_module_results is None:
+            messagebox.showwarning(
+                "No data",
+                "Run Extraction first - the stats tab needs the per-cohort "
+                "module results that extraction produces.",
+            )
+            return
+
+        selected = [k for k, v in self.stats_cohort_vars.items() if v.get()]
+        if len(selected) < 2:
+            messagebox.showerror(
+                "Pick at least 2 cohorts",
+                "Statistics require at least 2 cohorts to compare. Tick more boxes.",
+            )
+            return
+
+        # All work happens on a worker thread so the UI stays responsive,
+        # mirroring the extraction tab's pattern.
+        def worker():
+            self.root.after(
+                0, lambda: self.stats_progress_label.configure(
+                    text="Running statistics...", foreground="black"
+                )
+            )
+            self._log_stats(
+                f"Comparing cohorts: {', '.join(selected)}"
+            )
+            # Use the experiment folder name (e.g. "DG_GRABne") as the
+            # stats CSV prefix so two groups can be open in Excel at once.
+            stats_name_prefix = Path(self.experiment_path_var.get().strip()).name
+            try:
+                stats_paths = run_group_comparisons(
+                    cohort_results=self.cohort_module_results,
+                    means_dir=self.stats_means_dir,
+                    transients_dir=self.stats_transients_dir,
+                    name_prefix=stats_name_prefix,
+                    config=StatsConfig(cohorts_to_compare=selected),
+                )
+                if not stats_paths:
+                    self._log_stats(
+                        "  No measurements were compared. Are the selected "
+                        "cohorts present in the extracted data?"
+                    )
+                    self.root.after(
+                        0, lambda: self.stats_progress_label.configure(
+                            text="No measurements compared", foreground="orange"
+                        )
+                    )
+                    return
+                for folder, p in stats_paths.items():
+                    self._log_stats(f"  Stats [{folder}]: {p}")
+                self.root.after(
+                    0, lambda: self.stats_progress_label.configure(
+                        text="Statistics complete", foreground="green"
+                    )
+                )
+            except Exception as e:
+                self._log_stats(f"  Statistics FAILED - {e}")
+                logger.exception("Statistics run failed")
+                self.root.after(
+                    0, lambda: self.stats_progress_label.configure(
+                        text="Statistics failed", foreground="red"
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Tab 1 actions
@@ -405,13 +592,8 @@ class FiberPhotometryApp:
                 d["exclusion_reason"] = None
                 d["heating_start"] = None
 
-            # Determine cohort from metadata
-            if d["genotype"] == "WT":
-                d["cohort"] = "wt"
-            elif d["seizure"] > 0:
-                d["cohort"] = "seizure"
-            else:
-                d["cohort"] = "failed_seizure"
+            # Determine cohort from metadata (genotype × seized).
+            d["cohort"] = classify_from_metadata(d["genotype"], d["seizure"])
 
         self._discovered_sessions = discovered
 
@@ -581,7 +763,7 @@ class FiberPhotometryApp:
 
             if n_fail > 0:
                 self._log_loading(
-                    f"Done: {n_ok} loaded, {n_fail} failed — "
+                    f"Done: {n_ok} loaded, {n_fail} failed - "
                     "see status column and errors above."
                 )
             else:
@@ -704,7 +886,7 @@ class FiberPhotometryApp:
                 self.sessions.pop(idx)
 
     # ------------------------------------------------------------------
-    # Tab 2 actions — seizure marking
+    # Tab 2 actions - seizure marking
     # ------------------------------------------------------------------
 
     def _show_ecog_for_marking(self, session_idx: int) -> None:
@@ -713,7 +895,7 @@ class FiberPhotometryApp:
             return
         session = self.sessions[session_idx]
         if session.processed is None or session.processed.ecog_filtered is None:
-            self._log_preproc("Session not preprocessed yet — run preprocessing first.")
+            self._log_preproc("Session not preprocessed yet - run preprocessing first.")
             return
 
         self._marking_session_idx = session_idx
@@ -725,7 +907,7 @@ class FiberPhotometryApp:
         self._mark_ax.plot(time, ecog, color="gray", linewidth=0.5)
         self._mark_ax.set_xlabel("Time (s)")
         self._mark_ax.set_ylabel("ECoG (filtered)")
-        self._mark_ax.set_title(f"Session: {session.mouse_id} — click to place landmarks")
+        self._mark_ax.set_title(f"Session: {session.mouse_id} - click to place landmarks")
 
         # Reset landmarks
         for key in self._landmark_lines:
@@ -778,7 +960,7 @@ class FiberPhotometryApp:
         for name, var in [("EEC", self.eec_val_var), ("UEO", self.ueo_val_var),
                           ("Behavioral onset", self.behav_val_var), ("OFF", self.off_val_var)]:
             t = self._landmark_times[name]
-            var.set(f"{name}: {t:.2f}s" if t is not None else f"{name}: —")
+            var.set(f"{name}: {t:.2f}s" if t is not None else f"{name}: -")
 
     def _next_session_marking(self) -> None:
         """Show next session for landmark marking."""
@@ -828,7 +1010,7 @@ class FiberPhotometryApp:
                 self._log_preproc(f"  WARNING: could not save {session.mouse_id}: {e}")
 
     # ------------------------------------------------------------------
-    # Tab 2 actions — preprocessing
+    # Tab 2 actions - preprocessing
     # ------------------------------------------------------------------
 
     def _read_preprocessing_config(self, strategy: str) -> PreprocessingConfig:
@@ -919,7 +1101,7 @@ class FiberPhotometryApp:
 
             self.root.after(0, lambda: self.preproc_progress.configure(value=100))
             self.root.after(0, lambda: self.preproc_progress_label.configure(
-                text=f"Done — {total_sessions} sessions × {len(strategies)} strategy/strategies",
+                text=f"Done - {total_sessions} sessions × {len(strategies)} strategy/strategies",
                 foreground="green"))
             self._log_preproc("Preprocessing complete. Mark landmarks via the trace viewer below.")
             if self.sessions:
@@ -1023,7 +1205,7 @@ class FiberPhotometryApp:
             messagebox.showerror("Error", "No sessions loaded.")
             return
         if any(s.processed is None for s in self.sessions):
-            messagebox.showerror("Error", "Run preprocessing first — some sessions are not preprocessed.")
+            messagebox.showerror("Error", "Run preprocessing first - some sessions are not preprocessed.")
             return
         if self.running:
             messagebox.showwarning("Warning", "Already running.")
@@ -1036,7 +1218,7 @@ class FiberPhotometryApp:
             self.running = True
             config = self.analysis_config
 
-            # Output layout follows the strategy that's currently loaded —
+            # Output layout follows the strategy that's currently loaded -
             # session.preprocessing_config carries the strategy used at preprocess time.
             chosen_strategy = (self.sessions[0].preprocessing_config.photometry.strategy
                                if self.sessions and self.sessions[0].preprocessing_config
@@ -1048,7 +1230,7 @@ class FiberPhotometryApp:
             param_dir = str(layout["parameter_detection"])
             qc_dir = str(layout["quality_check"])
 
-            steps = 11  # pairing + 8 modules + diagnostic + done
+            steps = 12  # pairing + 8 modules + wide-UEO + diagnostic + done
             step = 0
 
             def progress(msg: str):
@@ -1058,6 +1240,27 @@ class FiberPhotometryApp:
                 self.root.after(0, lambda: self.extract_progress.configure(value=pct))
                 self.root.after(0, lambda: self.extract_progress_label.configure(text=msg))
                 self._log_extract(msg)
+
+            # Cohort comparison selection (from the Extraction tab checkboxes).
+            # Every multi-cohort plot is restricted to these keys; modules that
+            # operate per session (parameter detection, quality check) ignore
+            # the selection. cohort_module_results below stays full so the
+            # Statistics tab can still re-run with a different subset.
+            comparison_cohorts = {
+                k for k, v in self.compare_cohort_vars.items() if v.get()
+            }
+            if not comparison_cohorts:
+                self._log_extract(
+                    "  WARNING: no cohorts selected for comparison - defaulting "
+                    "to the full set so plots aren't empty."
+                )
+                comparison_cohorts = set(self.compare_cohort_vars.keys())
+            self._log_extract(
+                f"  Cohorts to compare: {sorted(comparison_cohorts)}"
+            )
+
+            def _filter_for_plot(d):
+                return {k: v for k, v in d.items() if k in comparison_cohorts}
 
             # --- 1. Pairing ---
             progress("Assigning control equivalent landmarks...")
@@ -1070,7 +1273,7 @@ class FiberPhotometryApp:
                     self._log_extract(f"  Pairing ({mode}): {len(seizure_sessions)} seizure, "
                                       f"{len(control_sessions)} control sessions")
                 except Exception as e:
-                    self._log_extract(f"  Pairing FAILED — aborting extraction: {e}")
+                    self._log_extract(f"  Pairing FAILED - aborting extraction: {e}")
                     logger.exception("Pairing failed")
                     self.root.after(0, lambda: self.extract_progress_label.configure(
                         text="Extraction failed (pairing error)", foreground="red"))
@@ -1079,16 +1282,20 @@ class FiberPhotometryApp:
             else:
                 self._log_extract("  Pairing skipped (need both seizure and control sessions)")
 
-            # Group sessions by cohort for group plots
+            # Group sessions by cohort for group plots (genotype × seized).
             cohort_groups: Dict[str, List[Session]] = {}
             for s in self.sessions:
-                if s.n_seizures > 0:
-                    key = "seizure"
-                elif s.genotype == "Scn1a":
-                    key = "failed_seizure"
-                else:
-                    key = "wt"
-                cohort_groups.setdefault(key, []).append(s)
+                cohort_groups.setdefault(classify_session(s), []).append(s)
+
+            # Global mean UEO->OFF duration across ALL seized sessions, used
+            # as the triggered-AUC integration window so every cohort's AUC
+            # is comparable. Crashes hard if no session has both landmarks
+            # set - that's intentional for these seizure-centric analyses.
+            global_mean_duration = mean_seizure_duration(self.sessions)
+            self._log_extract(
+                f"  Mean seizure duration (UEO->OFF) = "
+                f"{global_mean_duration:.2f}s -- using as triggered-AUC window"
+            )
 
             # --- 2–9. Run 8 analysis modules, each routed to means/ or transients/. ---
             # (name, compute_fn, plot_fn, dest_dir)
@@ -1104,9 +1311,15 @@ class FiberPhotometryApp:
             ]
 
             failed_modules = []
-            # Capture cross-module data for follow-up plots (Phase 2f, 4e).
+            # Capture cross-module data for follow-up plots (Phase 2f, 4e) and
+            # the cohort-level stats step. cohort_module_results is the same
+            # information indexed by cohort first so the stats runner can pull
+            # per-session scalars across every analysis module in one pass.
             ictal_results_by_cohort = {}
             spike_times_by_cohort: Dict[str, List[np.ndarray]] = {}
+            cohort_module_results: Dict[str, Dict[str, object]] = {
+                c: {} for c in cohort_groups
+            }
             for name, compute_fn, plot_fn, dest_dir in modules:
                 progress(f"Running {name}...")
                 try:
@@ -1122,52 +1335,100 @@ class FiberPhotometryApp:
                             results[cohort_name] = compute_spike_triggered_average(
                                 sessions, spike_times_list, config)
                         elif name == "Ictal mean":
-                            # OFF AUC fixed at 100 s (spec D5); others use config default.
+                            # OFF AUC fixed at 100 s (spec D5); other landmarks
+                            # use the global mean seizure duration.
                             results[cohort_name] = compute_ictal_mean(
-                                sessions, config,
+                                sessions, auc_end_s=global_mean_duration,
+                                config=config,
                                 auc_end_s_per_landmark={"OFF": 100.0},
                             )
                         else:
                             results[cohort_name] = compute_fn(sessions, config)
+                        cohort_module_results[cohort_name][name] = results[cohort_name]
 
-                    # Plot
-                    fig_path = plot_fn(results, dest_dir)
+                    # Plot - filtered to the selected cohort subset so every
+                    # multi-cohort panel honors the comparison selection.
+                    fig_path = plot_fn(_filter_for_plot(results), dest_dir)
                     self._log_extract(f"  {name}: saved {fig_path}")
                     if name == "Ictal mean":
                         ictal_results_by_cohort = results
 
                 except Exception as e:
                     failed_modules.append(name)
-                    self._log_extract(f"  {name}: ERROR — {e}")
+                    self._log_extract(f"  {name}: ERROR - {e}")
                     logger.exception("Error in %s", name)
 
             # --- 9b. Follow-up multi-source plots ---
-            # UEO-aligned heatmaps split by cohort (Phase 4e)
-            if ictal_results_by_cohort:
+            # Wide-window UEO-triggered mean per cohort (summary_UEO_aligned_traces
+            # and per-cohort standalones, both standard and _extended windows).
+            # TWO computations, one per window: a session only contributes
+            # to a window's mean if its recording actually spans it. Keeps
+            # the standard ±150s mean from being hijacked by the 1-2 long
+            # tails, and the extended -150..+1000s mean honestly reflects
+            # whatever N can span 1000s. The heatmap path uses cohort_groups
+            # directly and NaN-pads for display, so ALL sessions appear there.
+            progress("Writing per-cohort UEO-aligned traces...")
+            try:
+                wide_ueo = {
+                    cohort_name: compute_wide_ueo_triggered(
+                        sessions,
+                        window_s=config.wide_triggered_window_s,
+                    )
+                    for cohort_name, sessions in cohort_groups.items()
+                }
+                wide_ueo_extended = {
+                    cohort_name: compute_wide_ueo_triggered(
+                        sessions,
+                        window_s=config.wide_triggered_window_s,
+                        post_window_s=1000.0,
+                    )
+                    for cohort_name, sessions in cohort_groups.items()
+                }
+                p = plot_ueo_per_cohort(
+                    _filter_for_plot(wide_ueo), means_dir,
+                    results_extended=_filter_for_plot(wide_ueo_extended),
+                )
+                if p:
+                    self._log_extract(f"  Per-cohort UEO traces: {p}")
+            except Exception as e:
+                failed_modules.append("Per-cohort UEO traces")
+                self._log_extract(f"  Per-cohort UEO traces: ERROR - {e}")
+                logger.exception("Error in per-cohort UEO traces")
+
+            # UEO-aligned heatmaps split by cohort (Phase 4e). Takes the
+            # cohort session list directly so the heatmap can NaN-pad
+            # short-tailed rows for display, without contaminating the
+            # strict mean/SEM aggregation that drives the trace plot.
+            if cohort_groups:
                 progress("Writing UEO-aligned heatmaps...")
                 try:
-                    paths = plot_ueo_aligned_heatmaps(ictal_results_by_cohort, means_dir)
+                    paths = plot_ueo_aligned_heatmaps(
+                        _filter_for_plot(cohort_groups), means_dir,
+                    )
                     for c, p in paths.items():
                         self._log_extract(f"  UEO heatmap [{c}]: {p}")
                 except Exception as e:
                     failed_modules.append("UEO-aligned heatmaps")
-                    self._log_extract(f"  UEO heatmaps: ERROR — {e}")
+                    self._log_extract(f"  UEO heatmaps: ERROR - {e}")
                     logger.exception("Error in UEO heatmaps")
 
             # Experimental (470) vs isosbestic (405) spike-triggered overlay
-            # — motion-artifact diagnostic (Phase 2f). Quality-check, not a
-            # signal metric, so it lives under the quality check folder.
+            # (AUC_interictal_spikes_experimental_vs_isosbestic). Lives under
+            # plots_and_values_means/ alongside the other interictal-spikes AUC
+            # outputs.
             if spike_times_by_cohort:
                 progress("Writing 470 vs 405 spike-triggered overlay...")
                 try:
                     p = plot_experimental_vs_isosbestic_spike_triggered(
-                        cohort_groups, spike_times_by_cohort, qc_dir
+                        _filter_for_plot(cohort_groups),
+                        _filter_for_plot(spike_times_by_cohort),
+                        means_dir,
                     )
                     if p:
                         self._log_extract(f"  470/405 overlay: {p}")
                 except Exception as e:
                     failed_modules.append("470/405 spike-triggered overlay")
-                    self._log_extract(f"  470/405 overlay: ERROR — {e}")
+                    self._log_extract(f"  470/405 overlay: ERROR - {e}")
                     logger.exception("Error in 470/405 overlay")
 
             # --- 10. Per-session parameter detection diagnostic ---
@@ -1186,8 +1447,25 @@ class FiberPhotometryApp:
                 self._log_extract(f"  Parameter detection: wrote {n_done} session plots")
             except Exception as e:
                 failed_modules.append("Parameter detection")
-                self._log_extract(f"  Parameter detection: ERROR — {e}")
+                self._log_extract(f"  Parameter detection: ERROR - {e}")
                 logger.exception("Error in parameter detection")
+
+            # Stash the cohort × module results so the Statistics tab can
+            # run group comparisons on demand (opt-in, only DG/LC need it).
+            # cohort_module_results is intentionally kept full (all cohorts) so
+            # the Stats tab can still re-run with any subset; the Extraction
+            # tab's comparison-cohorts selection only filters the plots above.
+            self.cohort_module_results = cohort_module_results
+            self.cohort_groups_for_stats = cohort_groups
+            self.stats_means_dir = means_dir
+            self.stats_transients_dir = transients_dir
+            # Mirror the Extraction-tab selection into the Stats-tab boxes so
+            # the default Run there matches what was just plotted.
+            def _sync_stats_checks():
+                for key, var in self.stats_cohort_vars.items():
+                    var.set(key in comparison_cohorts)
+                self._refresh_stats_status()
+            self.root.after(0, _sync_stats_checks)
 
             # Update session statuses
             for i in range(len(self.sessions)):

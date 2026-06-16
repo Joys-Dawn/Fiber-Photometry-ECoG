@@ -87,7 +87,15 @@ def process_temperature(
     # If a session-specific baseline_window_s = (start_s, end_s) is provided
     # (from the data log), use that. Otherwise fall back to the first
     # baseline_duration_s seconds of the recording.
-    if baseline_window_s is not None:
+    #
+    # When the recording has no temperature probe (PTZ paradigm), the entire
+    # `temperature_smooth` array is NaN. np.nanmean / np.nanargmax raise on
+    # all-NaN slices, so explicitly check before calling them.
+    all_nan = bool(np.all(np.isnan(temperature_smooth)))
+
+    if all_nan:
+        baseline_temp = float("nan")
+    elif baseline_window_s is not None:
         i0 = max(0, int(baseline_window_s[0] * fs))
         i1 = min(len(temperature_smooth), int(baseline_window_s[1] * fs))
         if i1 > i0:
@@ -100,13 +108,19 @@ def process_temperature(
         baseline_n = min(baseline_n, len(temperature_smooth))
         baseline_temp = float(np.nanmean(temperature_smooth[:baseline_n]))
 
-    max_idx = int(np.nanargmax(temperature_smooth))
-    max_temp = float(temperature_smooth[max_idx])
-    max_temp_time = max_idx / fs
+    if all_nan:
+        max_temp = float("nan")
+        max_temp_time = float("nan")
+    else:
+        max_idx = int(np.nanargmax(temperature_smooth))
+        max_temp = float(temperature_smooth[max_idx])
+        max_temp_time = max_idx / fs
 
     # Terminal temp: fall back to the last non-NaN sample if the trace
-    # ends in a dropout.
-    if np.isnan(temperature_smooth[-1]):
+    # ends in a dropout. All-NaN → NaN.
+    if all_nan:
+        terminal_temp = float("nan")
+    elif np.isnan(temperature_smooth[-1]):
         valid = np.where(~np.isnan(temperature_smooth))[0]
         terminal_temp = float(temperature_smooth[valid[-1]]) if len(valid) else float("nan")
     else:

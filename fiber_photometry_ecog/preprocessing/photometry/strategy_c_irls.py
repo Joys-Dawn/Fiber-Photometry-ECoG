@@ -1,5 +1,5 @@
 """
-Strategy C — IRLS / Keevers photometry preprocessing.
+Strategy C - IRLS / Keevers photometry preprocessing.
 
 Reproduces the pipeline from Keevers & Jean-Richard-dit-Bressel 2025
 (Neurophotonics 12(2):025003, PMID 40166421).
@@ -115,7 +115,7 @@ class IRLSStrategy:
         """Apply IRLS-based photometry preprocessing (Keevers 2025).
 
         Pipeline: low-pass filter → IRLS regression → dF/F.
-        No biexponential detrending — the regression captures shared
+        No biexponential detrending - the regression captures shared
         bleaching via the isosbestic channel, and dF/F normalizes it.
 
         Parameters
@@ -163,7 +163,7 @@ class IRLSStrategy:
         # Guard: if fitted_iso crosses zero the dF/F division explodes.
         if np.any(fitted_iso <= 0):
             raise ValueError(
-                "IRLS fitted isosbestic crosses zero — dF/F is undefined. "
+                "IRLS fitted isosbestic crosses zero - dF/F is undefined. "
                 f"slope={slope:.4f}, intercept={intercept:.4f}, "
                 f"min(fitted_iso)={fitted_iso.min():.6f}"
             )

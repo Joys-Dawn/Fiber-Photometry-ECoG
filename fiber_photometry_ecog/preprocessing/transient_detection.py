@@ -3,7 +3,7 @@ Calcium transient detection.
 
 Two methods:
 1. prominence: scipy find_peaks with prominence (Chandni's original, Strategy A)
-2. wallace: two-step — height gate then prominence filter (Wallace 2025 ProM)
+2. wallace: two-step - height gate then prominence filter (Wallace 2025 ProM)
 
 Detection is performed on the z-scored HPF signal. Transient properties
 (amplitude, half-width) are measured on raw dF/F at the detected peak
@@ -69,7 +69,7 @@ def _detect_prominence(
 ) -> List[TransientEvent]:
     """Chandni's prominence-based detection (detect_transients.m).
 
-    1. findpeaks with MinPeakProminence (no wlen — full-signal prominence)
+    1. findpeaks with MinPeakProminence (no wlen - full-signal prominence)
     2. Post-hoc remove peaks wider than max_width_s
     """
     kwargs = {}

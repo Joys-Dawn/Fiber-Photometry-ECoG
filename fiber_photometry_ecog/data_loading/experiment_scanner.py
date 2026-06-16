@@ -30,8 +30,104 @@ def _has_record_nodes(p: Path) -> bool:
         return False
 
 
+def _is_session_container(p: Path) -> bool:
+    """True if `p` directly holds a *.ppd file AND has at least one OEP-style
+    subdir (Record Node child, or a folder that itself contains Record Nodes).
+
+    Used to detect the two-level layout where mouse folders sit directly under
+    the experiment root with no cohort layer in between.
+    """
+    try:
+        if not any(p.glob("*.ppd")):
+            return False
+        for sub in p.iterdir():
+            if not sub.is_dir():
+                continue
+            if sub.name.startswith("Record Node") or _has_record_nodes(sub):
+                return True
+        return False
+    except (OSError, PermissionError):
+        return False
+
+
+def _scan_session_dir(
+    session_dir: Path, cohort_name: str
+) -> List[Dict]:
+    """Discover OEP+PPD pairs inside a single session-level directory."""
+    oep_subdirs = [
+        sub for sub in sorted(session_dir.iterdir())
+        if sub.is_dir() and _has_record_nodes(sub)
+    ]
+    if not oep_subdirs and _has_record_nodes(session_dir):
+        oep_subdirs = [session_dir]
+
+    ppd_files = sorted(session_dir.glob("*.ppd"))
+
+    discovered: List[Dict] = []
+    if len(oep_subdirs) <= 1 and len(ppd_files) <= 1:
+        oep_path = str(oep_subdirs[0]) if oep_subdirs else None
+        ppd_path = str(ppd_files[0]) if ppd_files else None
+        if oep_path or ppd_path:
+            discovered.append({
+                "cohort": cohort_name,
+                "session_name": session_dir.name,
+                "oep_path": oep_path,
+                "ppd_path": ppd_path,
+            })
+        return discovered
+
+    # Multi-recording folder: pair OEP and PPD by YYYY-MM-DD.
+    oep_by_date: Dict[Optional[str], List[str]] = {}
+    for oep in oep_subdirs:
+        d = extract_date_from_oep(str(oep))
+        oep_by_date.setdefault(d, []).append(str(oep))
+    ppd_by_date: Dict[Optional[str], List[str]] = {}
+    for ppd in ppd_files:
+        d = _extract_date_from_ppd(str(ppd))
+        ppd_by_date.setdefault(d, []).append(str(ppd))
+
+    all_dates = sorted(
+        set(oep_by_date) | set(ppd_by_date),
+        key=lambda x: (x is None, x or ""),
+    )
+    for date in all_dates:
+        oep_list = oep_by_date.get(date, [])
+        ppd_list = ppd_by_date.get(date, [])
+        oep_path = oep_list[0] if oep_list else None
+        ppd_path = ppd_list[0] if ppd_list else None
+        if len(oep_list) > 1 or len(ppd_list) > 1:
+            logger.warning(
+                "Multiple OEP/PPD files share date %s in %s; using first.",
+                date, session_dir,
+            )
+        if not oep_path and not ppd_path:
+            continue
+        name = f"{session_dir.name}_{date}" if date else session_dir.name
+        discovered.append({
+            "cohort": cohort_name,
+            "session_name": name,
+            "oep_path": oep_path,
+            "ppd_path": ppd_path,
+        })
+    return discovered
+
+
 def scan_experiment_folder(experiment_dir: str) -> List[Dict]:
-    """Scan experiment/cohort/mouse_session/ hierarchy.
+    """Scan an experiment folder for OEP+PPD session pairs.
+
+    Two on-disk layouts are supported:
+
+    Three-level (canonical):
+        experiment_dir/<cohort>/<mouse_session>/{*.ppd, <OEP_folder>/}
+        e.g. DG_GRABne/scn1a_seizure/1938het/...
+
+    Two-level (flat - used by Mutant / NRI / FCD / PTZ / PVT subfolders):
+        experiment_dir/<mouse_session>/{*.ppd, <OEP_folder>/}
+        e.g. DG_GRABneMutant/3681het/...
+    Here the cohort layer is absent on disk; cohort metadata is expected to
+    come from the data log. As a fallback, the mouse-folder name is used as
+    the cohort tag so downstream genotype inference (`wt` substring) still
+    works for the flat case.
 
     Each session_dir may contain one or more recordings (multiple dated OEP
     folders + matching PPD files). When more than one recording is present,
@@ -41,69 +137,22 @@ def scan_experiment_folder(experiment_dir: str) -> List[Dict]:
     Returns list of dicts with keys: cohort, session_name, oep_path, ppd_path.
     """
     root = Path(experiment_dir)
-    discovered = []
-    for cohort_dir in sorted(root.iterdir()):
-        if not cohort_dir.is_dir():
+    discovered: List[Dict] = []
+    for top in sorted(root.iterdir()):
+        if not top.is_dir():
             continue
-        cohort_name = cohort_dir.name
-        for session_dir in sorted(cohort_dir.iterdir()):
+
+        # Two-level layout: `top` is a session container directly.
+        if _is_session_container(top):
+            discovered.extend(_scan_session_dir(top, top.name))
+            continue
+
+        # Three-level layout: `top` is a cohort folder; iterate its children.
+        cohort_name = top.name
+        for session_dir in sorted(top.iterdir()):
             if not session_dir.is_dir():
                 continue
-
-            oep_subdirs = [
-                sub for sub in sorted(session_dir.iterdir())
-                if sub.is_dir() and _has_record_nodes(sub)
-            ]
-            if not oep_subdirs and _has_record_nodes(session_dir):
-                oep_subdirs = [session_dir]
-
-            ppd_files = sorted(session_dir.glob("*.ppd"))
-
-            if len(oep_subdirs) <= 1 and len(ppd_files) <= 1:
-                oep_path = str(oep_subdirs[0]) if oep_subdirs else None
-                ppd_path = str(ppd_files[0]) if ppd_files else None
-                if oep_path or ppd_path:
-                    discovered.append({
-                        "cohort": cohort_name,
-                        "session_name": session_dir.name,
-                        "oep_path": oep_path,
-                        "ppd_path": ppd_path,
-                    })
-                continue
-
-            # Multi-recording folder: pair OEP and PPD by YYYY-MM-DD
-            oep_by_date: Dict[Optional[str], List[str]] = {}
-            for oep in oep_subdirs:
-                d = extract_date_from_oep(str(oep))
-                oep_by_date.setdefault(d, []).append(str(oep))
-            ppd_by_date: Dict[Optional[str], List[str]] = {}
-            for ppd in ppd_files:
-                d = _extract_date_from_ppd(str(ppd))
-                ppd_by_date.setdefault(d, []).append(str(ppd))
-
-            all_dates = sorted(
-                set(oep_by_date) | set(ppd_by_date),
-                key=lambda x: (x is None, x or ""),
-            )
-            for date in all_dates:
-                oep_list = oep_by_date.get(date, [])
-                ppd_list = ppd_by_date.get(date, [])
-                oep_path = oep_list[0] if oep_list else None
-                ppd_path = ppd_list[0] if ppd_list else None
-                if len(oep_list) > 1 or len(ppd_list) > 1:
-                    logger.warning(
-                        "Multiple OEP/PPD files share date %s in %s; using first.",
-                        date, session_dir,
-                    )
-                if not oep_path and not ppd_path:
-                    continue
-                name = f"{session_dir.name}_{date}" if date else session_dir.name
-                discovered.append({
-                    "cohort": cohort_name,
-                    "session_name": name,
-                    "oep_path": oep_path,
-                    "ppd_path": ppd_path,
-                })
+            discovered.extend(_scan_session_dir(session_dir, cohort_name))
     return discovered
 
 

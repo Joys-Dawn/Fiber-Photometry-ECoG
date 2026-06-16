@@ -42,6 +42,10 @@ class TriggeredAverage:
     per_session_auc: List[float]    # AUC for each session's triggered trace
     per_session_traces: List[np.ndarray]  # individual session traces
     auc_window_s: float = 0.0   # integration window (0 to this many seconds post-event)
+    # (mouse_id, heating_session) for each per_session_trace, in the same order.
+    # Lets downstream plots (heatmaps) keep labels aligned with the trace matrix
+    # even when sessions get filtered out (missing landmark, trace boundary).
+    per_session_meta: List[tuple] = None
 
 
 @dataclass
@@ -111,10 +115,15 @@ def _compute_triggered_average(
     """
     traces = []
     aucs = []
+    meta = []
 
     for s in sessions:
         t_event = landmark_func(s)
-        if t_event is None:
+        # NaN guard: no-temperature paradigm leaves max_temp_time as NaN,
+        # and any landmark accessor may return None for missing fields.
+        # Either case means the session has no usable event for this
+        # triggered average - skip it rather than feeding NaN to indexing.
+        if t_event is None or not np.isfinite(t_event):
             continue
         signal, time, fs = get_signal_and_time(s)
         pre_samples = int(round(pre_window_s * fs))
@@ -133,6 +142,7 @@ def _compute_triggered_average(
         auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
         auc = float(np.trapezoid(trace[pre_samples:auc_end_idx], dx=1.0 / fs))
         aucs.append(auc)
+        meta.append((s.mouse_id, s.heating_session))
 
     if not traces:
         return TriggeredAverage(
@@ -143,6 +153,7 @@ def _compute_triggered_average(
             per_session_auc=[],
             per_session_traces=[],
             auc_window_s=auc_end_s,
+            per_session_meta=[],
         )
 
     trace_mat = np.array(traces)
@@ -165,23 +176,48 @@ def _compute_triggered_average(
         per_session_auc=aucs,
         per_session_traces=traces,
         auc_window_s=auc_end_s,
+        per_session_meta=meta,
     )
+
+
+def mean_seizure_duration(sessions: List[Session]) -> float:
+    """Mean UEO->OFF duration across all seized sessions.
+
+    Driver-level helper so every cohort's ictal-mean run uses the SAME
+    AUC integration window. Crashes if no session has both ueo_time and
+    off_time set - the caller is doing something wrong if they pass a
+    set with no seizures (these analyses are seizure-centric).
+    """
+    durations: List[float] = []
+    for s in sessions:
+        lm = s.landmarks
+        if (s.n_seizures > 0 and lm is not None
+                and lm.ueo_time is not None and lm.off_time is not None
+                and lm.off_time > lm.ueo_time):
+            durations.append(lm.off_time - lm.ueo_time)
+    if not durations:
+        raise ValueError(
+            "mean_seizure_duration: no seized sessions with valid "
+            "ueo_time and off_time landmarks - cannot compute AUC window."
+        )
+    return float(np.mean(durations))
 
 
 def compute_ictal_mean(
     sessions: List[Session],
+    auc_end_s: float,
     config: AnalysisConfig | None = None,
-    auc_end_s_override: Optional[float] = None,
     auc_end_s_per_landmark: Optional[Dict[str, float]] = None,
 ) -> IctalMeanGroupResult:
     """Compute ictal mean signal metrics for a group of sessions.
 
     Parameters
     ----------
-    auc_end_s_override : if set, use this many seconds for the triggered-AUC
-        integration window instead of `config.triggered_auc_end_s`. The driver
-        passes the cohort's mean seizure duration here so the AUC reflects the
-        actual seizure length rather than a fixed 60s.
+    auc_end_s : triggered-AUC integration window in seconds. Required.
+        Callers MUST pass the global mean seizure duration computed via
+        `mean_seizure_duration(all_sessions)` so every cohort's AUC uses
+        the same window. There is no fallback - if you don't have a
+        sensible value, you shouldn't be calling this function.
     auc_end_s_per_landmark : optional dict mapping landmark name (e.g. "OFF")
         to an integration window in seconds, overriding the global default for
         that landmark. Also extends the post-event trace window so the full
@@ -203,7 +239,6 @@ def compute_ictal_mean(
     deltas = []
     deltas_max = []
     deltas_min = []
-    durations = []
 
     for s in sessions:
         signal, time, fs = get_signal_and_time(s)
@@ -252,28 +287,9 @@ def compute_ictal_mean(
         deltas.append(delta)
         deltas_max.append(delta_max)
         deltas_min.append(delta_min)
-        # Track real (not equivalent) seizure durations for fallback computation
-        if (s.n_seizures > 0
-                and s.landmarks.ueo_time is not None
-                and s.landmarks.off_time is not None
-                and s.landmarks.off_time > s.landmarks.ueo_time):
-            durations.append(s.landmarks.off_time - s.landmarks.ueo_time)
-
-    # Triggered averages for each landmark
+    # Triggered averages for each landmark.
     window_s = config.triggered_window_s
-
-    # Determine the *default* AUC integration window for landmarks without a
-    # per-landmark override:
-    # - explicit override from caller (driver passes cohort mean) wins
-    # - else, fall back to this cohort's own mean seizure duration
-    # - else, fall back to config default (60s)
-    cohort_mean_dur = float(np.mean(durations)) if durations else np.nan
-    if auc_end_s_override is not None and not np.isnan(auc_end_s_override):
-        default_auc_end_s = float(auc_end_s_override)
-    elif not np.isnan(cohort_mean_dur):
-        default_auc_end_s = cohort_mean_dur
-    else:
-        default_auc_end_s = config.triggered_auc_end_s
+    default_auc_end_s = float(auc_end_s)
 
     landmarks = {
         "EEC": get_eec_time,
@@ -311,7 +327,7 @@ def compute_ictal_mean(
         delta_sem=compute_sem(d_arr),
         triggered_averages=triggered,
         auc_window_s=default_auc_end_s,
-        mean_seizure_duration_s=cohort_mean_dur,
+        mean_seizure_duration_s=default_auc_end_s,
         delta_max_mean=float(np.nanmean(d_max_arr)) if deltas_max else np.nan,
         delta_max_sem=compute_sem(d_max_arr) if deltas_max else np.nan,
         delta_min_mean=float(np.nanmean(d_min_arr)) if deltas_min else np.nan,
@@ -325,10 +341,18 @@ def compute_wide_ueo_triggered(
     bl_start_s: float = 5.0,
     bl_end_s: float = 1.0,
     auc_end_s: float = 60.0,
+    post_window_s: Optional[float] = None,
 ) -> TriggeredAverage:
-    """Wide-window UEO triggered average for per-cohort visualization."""
+    """Wide-window UEO triggered average for per-cohort visualization.
+
+    `window_s` controls the pre-event window; `post_window_s` (when given)
+    overrides the post-event extent. Callers needing the extended
+    UEO-aligned heatmaps/traces pass post_window_s=1000 so the trace data
+    actually spans the +1000s tail the plot expects.
+    """
     sessions = [s for s in sessions if s.include_for_baseline]
+    post = window_s if post_window_s is None else post_window_s
     return _compute_triggered_average(
-        sessions, get_ueo_time, window_s, window_s,
+        sessions, get_ueo_time, window_s, post,
         bl_start_s, bl_end_s, auc_end_s,
     )
