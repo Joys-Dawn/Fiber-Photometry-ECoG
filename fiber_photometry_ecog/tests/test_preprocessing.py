@@ -198,14 +198,16 @@ class TestECoGFilter:
 # ---------------------------------------------------------------------------
 
 class TestBiexponentialFit:
+    """Tests use Meiling's biexp bounds: tau_slow >= 600s, tau_fast <= tau_slow."""
+
     def test_recovers_known_decay(self):
-        """Fit should recover a known exponential decay."""
-        fs = 130.0
-        duration = 300.0
+        """Fit should recover a known biexponential decay."""
+        fs = 20.0
+        duration = 2000.0
         n = int(fs * duration)
         t = np.arange(n) / fs
         true_signal = (
-            2.0 * np.exp(-t / 150.0) + 0.5 * np.exp(-t / 50.0) + 1.0
+            2.0 * np.exp(-t / 1500.0) + 0.5 * np.exp(-t / 200.0) + 1.0
         )
         noisy = true_signal + 0.01 * np.random.randn(n)
 
@@ -213,35 +215,18 @@ class TestBiexponentialFit:
         residuals = noisy - fitted
         assert np.std(residuals) < 0.05
 
-    def test_monoexp_fallback(self):
-        """If biexp fails, should fall back to monoexponential."""
-        fs = 130.0
-        n = int(fs * 60.0)
-        t = np.arange(n) / fs
-        signal = 1.0 * np.exp(-t / 30.0) + 0.5
-        signal += 0.001 * np.random.randn(n)
-        fitted = fit_biexponential(signal, fs)
-        assert len(fitted) == n
-
     def test_fit_output_is_finite_and_bounded(self):
-        """Fitted biexponential must not contain inf, nan, or wild values.
-
-        Regression test: the crop fallback previously extrapolated with
-        negative time, causing exp(positive) = exponential growth.
-        With the np.maximum clamp fix, all paths produce bounded output.
-        """
-        fs = 130.0
-        n = int(fs * 300)
+        """Fitted biexponential must not contain inf, nan, or wild values."""
+        fs = 20.0
+        n = int(fs * 2000)
         t = np.arange(n) / fs
 
-        # Standard bleaching signal
-        signal = 2.0 * np.exp(-t / 150.0) + 0.5 * np.exp(-t / 50.0) + 1.0
+        signal = 2.0 * np.exp(-t / 1500.0) + 0.5 * np.exp(-t / 200.0) + 1.0
         signal += 0.01 * np.random.randn(n)
 
-        fitted = fit_biexponential(signal, fs, crop_s=120.0)
+        fitted = fit_biexponential(signal, fs)
 
         assert np.all(np.isfinite(fitted))
-        # Fitted values should be in a reasonable range for fluorescence
         assert np.max(fitted) < 100.0
         assert np.min(fitted) > -10.0
 

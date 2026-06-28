@@ -55,6 +55,43 @@ def compute_seizure_group_means(
     ------
     ValueError if no valid seizure sessions or required landmarks are missing.
     """
+    if not seizure_sessions:
+        raise ValueError("No valid seizure sessions provided.")
+
+    # Required-landmarks gate: every seizure session MUST have eec/ueo/off
+    # times and matching temps. behavioral_onset is optional but all-or-none.
+    missing_required = []
+    for sess in seizure_sessions:
+        lm = sess.landmarks
+        if (lm is None
+                or lm.eec_time is None
+                or lm.ueo_time is None
+                or lm.off_time is None
+                or lm.eec_temp is None
+                or lm.ueo_temp is None):
+            missing_required.append((sess.mouse_id, sess.heating_session))
+    if missing_required:
+        raise ValueError(
+            f"Pairing: {len(missing_required)}/{len(seizure_sessions)} seizure "
+            f"session(s) missing required landmarks (eec/ueo/off time + "
+            f"eec/ueo temp): {missing_required}. Seizure sessions must have "
+            f"all primary landmarks populated before pairing — silent skip is "
+            f"disabled."
+        )
+
+    # behavioral_onset is optional, but all-or-none across the cohort.
+    has_beh = [s.landmarks.behavioral_onset_time is not None
+               and s.landmarks.behavioral_onset_temp is not None
+               for s in seizure_sessions]
+    if 0 < sum(has_beh) < len(seizure_sessions):
+        mismatched = [(s.mouse_id, s.heating_session)
+                      for s, ok in zip(seizure_sessions, has_beh) if not ok]
+        raise ValueError(
+            f"Pairing: asymmetric behavioral_onset availability "
+            f"({sum(has_beh)}/{len(seizure_sessions)}). Sessions missing: "
+            f"{mismatched}. Either every seizure session has it or none should."
+        )
+
     eec_times = []
     ueo_times = []
     beh_times = []
@@ -66,11 +103,6 @@ def compute_seizure_group_means(
 
     for sess in seizure_sessions:
         lm = sess.landmarks
-        if lm is None:
-            continue
-        if lm.eec_time is None or lm.ueo_time is None or lm.off_time is None:
-            continue
-
         heat_start = lm.heating_start_time
 
         eec_times.append(lm.eec_time - heat_start)
@@ -78,25 +110,12 @@ def compute_seizure_group_means(
         off_times.append(lm.off_time - heat_start)
         seizure_durations.append(lm.off_time - lm.ueo_time)
 
+        eec_temps.append(lm.eec_temp)
+        ueo_temps.append(lm.ueo_temp)
+
         if lm.behavioral_onset_time is not None:
             beh_times.append(lm.behavioral_onset_time - heat_start)
-
-        # Use pre-computed landmark temperatures (already NaN-filtered by
-        # pipeline.py - None means thermistor dropout at that time).
-        if lm.eec_temp is not None:
-            eec_temps.append(lm.eec_temp)
-        if lm.ueo_temp is not None:
-            ueo_temps.append(lm.ueo_temp)
-        if lm.behavioral_onset_time is not None and lm.behavioral_onset_temp is not None:
             beh_temps.append(lm.behavioral_onset_temp)
-
-    if not eec_times:
-        raise ValueError("No valid seizure sessions with EEC/UEO/OFF landmarks found.")
-    if not eec_temps:
-        raise ValueError(
-            "No temperature data available for seizure sessions. "
-            "Temperature processing must run before pairing."
-        )
 
     return SeizureGroupMeans(
         mean_eec_time=float(np.mean(eec_times)),

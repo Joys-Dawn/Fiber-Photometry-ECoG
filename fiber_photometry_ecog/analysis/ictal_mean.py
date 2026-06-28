@@ -8,6 +8,7 @@ AUC via trapezoidal integration on each triggered average.
 Multi-seizure handling: EEC/UEO from 1st seizure, OFF from last seizure.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import List, Optional, Dict
 
@@ -24,6 +25,15 @@ from ._helpers import (
     time_to_index,
     compute_sem,
 )
+
+log = logging.getLogger(__name__)
+
+
+# Landmarks that may legitimately be absent on individual sessions (e.g.,
+# behavioral_onset isn't scored on every session). For these, the triggered
+# average drops sessions that lack the landmark but LOGS the per-session
+# exclusion so it's visible. Every other landmark is all-or-none-or-crash.
+_OPTIONAL_LANDMARKS = {"behavioral_onset"}
 
 
 # Landmarks whose AUC integration window is fixed at 100 s post-event per spec
@@ -86,16 +96,33 @@ def _extract_triggered_trace(
     event_idx: int,
     pre_samples: int,
     post_samples: int,
+    nan_pad: bool = False,
 ) -> Optional[np.ndarray]:
     """Extract an (asymmetric) window of signal around event_idx.
 
-    Returns None if the window extends beyond the signal boundaries.
+    With `nan_pad=False` (default), returns None if the window extends
+    beyond the signal boundaries. With `nan_pad=True`, returns a
+    full-length array (pre_samples + post_samples + 1) padded with NaN
+    wherever the signal doesn't reach - so downstream nanmean aggregation
+    can still include the session over whatever range it does cover.
     """
     start = event_idx - pre_samples
     end = event_idx + post_samples + 1
-    if start < 0 or end > len(signal):
+    if not nan_pad:
+        if start < 0 or end > len(signal):
+            return None
+        return signal[start:end].copy()
+
+    total = pre_samples + post_samples + 1
+    out = np.full(total, np.nan, dtype=float)
+    sig_start = max(0, start)
+    sig_end = min(len(signal), end)
+    if sig_end <= sig_start:
         return None
-    return signal[start:end].copy()
+    out_start = sig_start - start
+    out_end = out_start + (sig_end - sig_start)
+    out[out_start:out_end] = signal[sig_start:sig_end]
+    return out
 
 
 def _compute_triggered_average(
@@ -106,45 +133,57 @@ def _compute_triggered_average(
     bl_start_s: float,
     bl_end_s: float,
     auc_end_s: float,
+    nan_pad: bool = True,
+    landmark_name: str = "",
 ) -> TriggeredAverage:
     """Compute event-triggered average across sessions for a given landmark.
 
     Window is asymmetric: pre_window_s seconds before the event, post_window_s
     seconds after. The AUC is integrated from 0 to auc_end_s post-event and
     requires post_window_s >= auc_end_s.
+
+    All-or-none-or-crash policy on the landmark:
+      - All sessions have a finite landmark time: compute as normal.
+      - No sessions have it: return an empty placeholder (the paradigm
+        legitimately doesn't use this landmark, e.g. opto has no max_temp).
+      - Mixed: crash. Asymmetric per-cohort exclusion is the silent-drop
+        bug we refuse to ship. Exception: landmarks in `_OPTIONAL_LANDMARKS`
+        (currently just `behavioral_onset`) drop the missing sessions but
+        emit an INFO log naming them so the drop is visible.
+
+    `nan_pad=True` (default) lets sessions whose RECORDING doesn't fully
+    span the window contribute over whatever range they do cover (NaN-
+    padded elsewhere), with cohort mean/SEM using nanmean/nanstd. Short
+    recordings no longer blank out the cohort trace.
     """
-    traces = []
-    aucs = []
-    meta = []
-
+    # Landmark availability check — done UP FRONT so the all-or-none-or-
+    # crash decision is visible, not hidden inside the per-session loop.
+    is_optional = landmark_name in _OPTIONAL_LANDMARKS
+    valid_sessions: List[Session] = []
+    missing: List[tuple] = []
     for s in sessions:
-        t_event = landmark_func(s)
-        # NaN guard: no-temperature paradigm leaves max_temp_time as NaN,
-        # and any landmark accessor may return None for missing fields.
-        # Either case means the session has no usable event for this
-        # triggered average - skip it rather than feeding NaN to indexing.
-        if t_event is None or not np.isfinite(t_event):
-            continue
-        signal, time, fs = get_signal_and_time(s)
-        pre_samples = int(round(pre_window_s * fs))
-        post_samples = int(round(post_window_s * fs))
-        event_idx = time_to_index(t_event, fs)
-        trace = _extract_triggered_trace(
-            signal, fs, event_idx, pre_samples, post_samples)
-        if trace is None:
-            continue
+        t = landmark_func(s)
+        if t is None or not np.isfinite(t):
+            missing.append((s.mouse_id, s.heating_session))
+        else:
+            valid_sessions.append(s)
 
-        bl_lo = pre_samples - int(round(bl_start_s * fs))
-        bl_hi = pre_samples - int(round(bl_end_s * fs))
-        trace = trace - np.mean(trace[bl_lo:bl_hi])
-        traces.append(trace)
+    if missing and valid_sessions:
+        if is_optional:
+            log.info(
+                "Triggered avg [%s]: %d/%d session(s) missing landmark, "
+                "dropping from this metric only: %s",
+                landmark_name or "?", len(missing), len(sessions), missing,
+            )
+        else:
+            raise ValueError(
+                f"Triggered avg [{landmark_name or '?'}]: asymmetric landmark "
+                f"availability ({len(valid_sessions)}/{len(sessions)} have it). "
+                f"Sessions missing: {missing}. Either every session has the "
+                f"landmark or none should; the silent-skip path is disabled."
+            )
 
-        auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
-        auc = float(np.trapezoid(trace[pre_samples:auc_end_idx], dx=1.0 / fs))
-        aucs.append(auc)
-        meta.append((s.mouse_id, s.heating_session))
-
-    if not traces:
+    if not valid_sessions:
         return TriggeredAverage(
             time_axis=np.array([0.0]),
             mean_trace=np.array([np.nan]),
@@ -156,17 +195,78 @@ def _compute_triggered_average(
             per_session_meta=[],
         )
 
-    trace_mat = np.array(traces)
-    mean_trace = np.mean(trace_mat, axis=0)
-    sem_trace = (np.std(trace_mat, axis=0, ddof=1) / np.sqrt(len(traces))
-                 if len(traces) > 1 else np.zeros(trace_mat.shape[1]))
+    traces = []
+    aucs = []
+    meta = []
 
-    fs = sessions[0].processed.fs
+    for s in valid_sessions:
+        t_event = landmark_func(s)
+        signal, time, fs = get_signal_and_time(s)
+        pre_samples = int(round(pre_window_s * fs))
+        post_samples = int(round(post_window_s * fs))
+        event_idx = time_to_index(t_event, fs)
+        trace = _extract_triggered_trace(
+            signal, fs, event_idx, pre_samples, post_samples,
+            nan_pad=nan_pad)
+        if trace is None:
+            # nan_pad=True only returns None if the entire window lies
+            # outside the recording — should not happen for valid landmarks
+            # with non-zero recordings. Crash loudly instead of silently
+            # dropping the session.
+            raise ValueError(
+                f"Triggered avg [{landmark_name or '?'}]: session "
+                f"{s.mouse_id} S{s.heating_session} produced an empty "
+                f"trace at event_idx={event_idx}, signal_len={len(signal)} "
+                f"(pre_samples={pre_samples}, post_samples={post_samples})."
+            )
+
+        bl_lo = pre_samples - int(round(bl_start_s * fs))
+        bl_hi = pre_samples - int(round(bl_end_s * fs))
+        bl_window = trace[bl_lo:bl_hi]
+        if nan_pad:
+            if np.any(~np.isnan(bl_window)):
+                trace = trace - float(np.nanmean(bl_window))
+        else:
+            trace = trace - np.mean(bl_window)
+        traces.append(trace)
+
+        auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
+        auc_window = trace[pre_samples:auc_end_idx]
+        if nan_pad and np.any(np.isnan(auc_window)):
+            auc = float("nan")
+        else:
+            auc = float(np.trapezoid(auc_window, dx=1.0 / fs))
+        aucs.append(auc)
+        meta.append((s.mouse_id, s.heating_session))
+
+    trace_mat = np.array(traces)
+    if nan_pad:
+        # nanmean/nanstd let sessions that don't span the full window
+        # contribute over whatever range they do cover. SEM uses the
+        # per-bin valid-N so the error bar widens where fewer sessions
+        # contribute, instead of going zero or NaN.
+        mean_trace = np.nanmean(trace_mat, axis=0)
+        n_per_bin = np.sum(~np.isnan(trace_mat), axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            std_trace = np.nanstd(trace_mat, axis=0, ddof=1)
+            sem_trace = np.where(n_per_bin > 1,
+                                 std_trace / np.sqrt(n_per_bin),
+                                 0.0)
+    else:
+        mean_trace = np.mean(trace_mat, axis=0)
+        sem_trace = (np.std(trace_mat, axis=0, ddof=1) / np.sqrt(len(traces))
+                     if len(traces) > 1 else np.zeros(trace_mat.shape[1]))
+
+    fs = valid_sessions[0].processed.fs
     pre_samples = int(round(pre_window_s * fs))
     n_samples = trace_mat.shape[1]
     time_axis = np.linspace(-pre_window_s, post_window_s, n_samples)
     auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
-    auc_mean = float(np.trapezoid(mean_trace[pre_samples:auc_end_idx], dx=1.0 / fs))
+    auc_window_mean = mean_trace[pre_samples:auc_end_idx]
+    if nan_pad and np.any(np.isnan(auc_window_mean)):
+        auc_mean = float("nan")
+    else:
+        auc_mean = float(np.trapezoid(auc_window_mean, dx=1.0 / fs))
 
     return TriggeredAverage(
         time_axis=time_axis,
@@ -181,23 +281,27 @@ def _compute_triggered_average(
 
 
 def mean_seizure_duration(sessions: List[Session]) -> float:
-    """Mean UEO->OFF duration across all seized sessions.
+    """Mean UEO->OFF duration across all sessions with both landmarks set.
 
     Driver-level helper so every cohort's ictal-mean run uses the SAME
-    AUC integration window. Crashes if no session has both ueo_time and
-    off_time set - the caller is doing something wrong if they pass a
-    set with no seizures (these analyses are seizure-centric).
+    AUC integration window. Includes any session whose `ueo_time` AND
+    `off_time` are populated, which covers seized hyperthermia/PTZ
+    sessions and opto stim bursts alike. Hyperthermia controls have only
+    `equiv_ueo_time` (set by pairing) and are correctly skipped.
+
+    Crashes if no session qualifies - the caller is asking for an AUC
+    window with no events to derive it from.
     """
     durations: List[float] = []
     for s in sessions:
         lm = s.landmarks
-        if (s.n_seizures > 0 and lm is not None
+        if (lm is not None
                 and lm.ueo_time is not None and lm.off_time is not None
                 and lm.off_time > lm.ueo_time):
             durations.append(lm.off_time - lm.ueo_time)
     if not durations:
         raise ValueError(
-            "mean_seizure_duration: no seized sessions with valid "
+            "mean_seizure_duration: no sessions with valid "
             "ueo_time and off_time landmarks - cannot compute AUC window."
         )
     return float(np.mean(durations))
@@ -309,6 +413,7 @@ def compute_ictal_mean(
             config.triggered_baseline_start_s,
             config.triggered_baseline_end_s,
             auc_end_s,
+            landmark_name=name,
         )
 
     sz_arr = np.array(sz_means)
@@ -349,10 +454,17 @@ def compute_wide_ueo_triggered(
     overrides the post-event extent. Callers needing the extended
     UEO-aligned heatmaps/traces pass post_window_s=1000 so the trace data
     actually spans the +1000s tail the plot expects.
+
+    NaN-pads sessions that don't fully span the requested post window
+    (e.g. opto recordings that are ~500s total but the caller asks for a
+    +1000s tail) so the cohort mean/SEM still reflect the available
+    coverage instead of blanking the entire trace.
     """
     sessions = [s for s in sessions if s.include_for_baseline]
     post = window_s if post_window_s is None else post_window_s
     return _compute_triggered_average(
         sessions, get_ueo_time, window_s, post,
         bl_start_s, bl_end_s, auc_end_s,
+        nan_pad=True,
+        landmark_name="UEO",
     )

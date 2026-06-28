@@ -272,7 +272,7 @@ class TestIctalMean:
         fs = s.processed.fs
         signal[:int(60 * fs)] = 1.0      # baseline
         signal[int(180 * fs):int(200 * fs)] = 10.0  # seizure
-        result = compute_ictal_mean([s])
+        result = compute_ictal_mean([s], auc_end_s=20.0)
         sr = result.session_results[0]
         assert sr.baseline_mean == pytest.approx(1.0)
         assert sr.seizure_mean == pytest.approx(10.0)
@@ -288,7 +288,7 @@ class TestIctalMean:
         # Late heat: midpoint(60,180)=120 to 180
         signal[int(120 * fs):int(180 * fs)] = 3.0
         signal[int(180 * fs):int(200 * fs)] = 8.0
-        result = compute_ictal_mean([s])
+        result = compute_ictal_mean([s], auc_end_s=20.0)
         assert result.session_results[0].delta_preictal_ictal == pytest.approx(5.0)
 
     def test_triggered_averages_computed(self):
@@ -298,7 +298,7 @@ class TestIctalMean:
             ueo_time=150.0,
         )
         config = AnalysisConfig(triggered_window_s=10.0)
-        result = compute_ictal_mean([s], config)
+        result = compute_ictal_mean([s], auc_end_s=20.0, config=config)
         assert "UEO" in result.triggered_averages
         assert "EEC" in result.triggered_averages
         assert "OFF" in result.triggered_averages
@@ -314,7 +314,7 @@ class TestIctalMean:
             signal_value=1.0,
         )
         config = AnalysisConfig(triggered_window_s=10.0)
-        result = compute_ictal_mean([s], config)
+        result = compute_ictal_mean([s], auc_end_s=20.0, config=config)
         ta = result.triggered_averages["UEO"]
         # Constant signal → baseline-subtracted → AUC = 0.0
         assert ta.auc == pytest.approx(0.0, abs=1e-10)
@@ -326,7 +326,7 @@ class TestIctalMean:
             max_temp_time=185.0,
         )
         config = AnalysisConfig(triggered_window_s=10.0)
-        result = compute_ictal_mean([s], config)
+        result = compute_ictal_mean([s], auc_end_s=20.0, config=config)
         assert "max_temp" in result.triggered_averages
 
 
@@ -431,13 +431,23 @@ class TestSpikeTriggered:
         # AUC should be positive (signal rises after spike)
         assert sr.auc > 0
 
-    def test_edge_spikes_excluded(self):
+    def test_edge_spikes_nan_padded(self):
+        """Edge spikes that don't have a full window get NaN-padded
+        rather than silently dropped. The spike is still counted in
+        n_spikes so the user sees that it existed — that's the contract:
+        no session/event vanishes without trace.
+        """
         s = _make_session(fs=100.0, duration_s=300.0)
-        # Spike at 1.0s with 5s window → start at -4.0s → out of bounds
+        # Spike at 1.0s with 5s window → pre-spike window starts at -4.0s,
+        # which is before recording start (fully clipped baseline).
         spike_times = np.array([1.0])
         config = AnalysisConfig(spike_triggered_window_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
-        assert result.session_results[0].n_spikes == 0
+        sr = result.session_results[0]
+        # Old behaviour silently dropped the spike. New behaviour counts it.
+        assert sr.n_spikes == 1
+        # And the trace has NaNs where data was unavailable.
+        assert np.any(np.isnan(sr.mean_trace))
 
     def test_no_spikes(self):
         s = _make_session(fs=100.0, duration_s=300.0)

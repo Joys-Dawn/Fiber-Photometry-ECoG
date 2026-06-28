@@ -123,16 +123,20 @@ class TestComputeSeizureGroupMeans:
         with pytest.raises(ValueError, match="No valid seizure sessions"):
             compute_seizure_group_means([])
 
-    def test_session_without_landmarks_skipped(self):
+    def test_session_without_landmarks_raises(self):
+        """Silent skipping of seizure sessions with missing landmarks is
+        disabled — pairing must crash so the data problem is visible."""
         fs = 100.0
         good = _make_seizure_session("M1", fs, 600, heat_start=60.0,
                                      eec_time=300.0, ueo_time=320.0, off_time=350.0)
         bad = Session(mouse_id="M2", genotype="Scn1a", n_seizures=1,
                       landmarks=None)
-        means = compute_seizure_group_means([good, bad])
-        assert means.mean_eec_time == pytest.approx(240.0)
+        with pytest.raises(ValueError, match="missing required landmarks"):
+            compute_seizure_group_means([good, bad])
 
-    def test_session_with_partial_landmarks_skipped(self):
+    def test_session_with_partial_landmarks_raises(self):
+        """A seizure session missing ueo/off time must crash pairing, not
+        silently disappear from the group means."""
         fs = 100.0
         good = _make_seizure_session("M1", fs, 600, heat_start=60.0,
                                      eec_time=300.0, ueo_time=320.0, off_time=350.0)
@@ -140,8 +144,8 @@ class TestComputeSeizureGroupMeans:
             mouse_id="M2", genotype="Scn1a", n_seizures=1,
             landmarks=SessionLandmarks(heating_start_time=60.0, eec_time=300.0),
         )
-        means = compute_seizure_group_means([good, partial])
-        assert means.mean_eec_time == pytest.approx(240.0)
+        with pytest.raises(ValueError, match="missing required landmarks"):
+            compute_seizure_group_means([good, partial])
 
 
 # ──────────────────────────────────────────────────────────────

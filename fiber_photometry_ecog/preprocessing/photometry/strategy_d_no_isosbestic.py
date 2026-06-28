@@ -47,12 +47,11 @@ class NoIsosbesticStrategy:
             config = PhotometryConfig()
 
         cutoff = config.lowpass_cutoff_b
-        crop_s = config.biexp_crop_s
 
         sos = butter(4, cutoff, btype="lowpass", fs=fs, output="sos")
         filt_470 = sosfiltfilt(sos, signal_470)
 
-        expfit_470 = fit_biexponential(filt_470, fs, crop_s=crop_s)
+        expfit_470 = fit_biexponential(filt_470, fs)
 
         if np.any(expfit_470 <= 0):
             raise ValueError(

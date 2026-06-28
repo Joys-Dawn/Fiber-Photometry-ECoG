@@ -78,6 +78,35 @@ def compute_cohort_characteristics(
         if duration is not None:
             durations.append(duration)
 
+    # All-or-none-or-crash: any asymmetric availability within a cohort is
+    # a bug. Either every session in the cohort has the metric (e.g. temp
+    # for hyperthermia, duration for seized cohorts) or none does (e.g.
+    # temp for PTZ/opto, duration for control-only cohorts).
+    def _assert_uniform(name: str, present: list):
+        n_total = len(sessions)
+        n_present = len(present)
+        if 0 < n_present < n_total:
+            missing = [(s.mouse_id, s.heating_session) for s, v in zip(
+                sessions,
+                [s.landmarks.baseline_temp if name == "baseline_temp"
+                 else get_ueo_temp(s) if name == "seizure_threshold_temp"
+                 else (s.landmarks.off_time - s.landmarks.ueo_time
+                       if (s.landmarks is not None
+                           and s.landmarks.ueo_time is not None
+                           and s.landmarks.off_time is not None)
+                       else None)
+                 for s in sessions]
+            ) if v is None]
+            raise ValueError(
+                f"Cohort characteristics: asymmetric '{name}' availability "
+                f"({n_present}/{n_total}). Sessions missing: {missing}. "
+                f"Either every session in this cohort has it or none should."
+            )
+
+    _assert_uniform("baseline_temp", baseline_temps)
+    _assert_uniform("seizure_threshold_temp", threshold_temps)
+    _assert_uniform("seizure_duration_s", durations)
+
     bl_arr = np.array(baseline_temps) if baseline_temps else np.array([])
     th_arr = np.array(threshold_temps) if threshold_temps else np.array([])
     dur_arr = np.array(durations) if durations else np.array([])

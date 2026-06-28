@@ -51,13 +51,32 @@ class OEPData:
     ttl_states: np.ndarray         # TTL states (+1 rise, -1 fall)
     ttl_timestamps: np.ndarray     # TTL event timestamps
     metadata: Dict[str, Any]       # full oebin dict
+    stim: Optional[np.ndarray] = None  # analog opto-stim channel (volts), None if not requested
+
+
+def _rec_dir_has_continuous_dat(rec_dir: Path) -> bool:
+    """True if rec_dir has at least one continuous stream with continuous.dat
+    on disk. Some setups (e.g. the opto rig) have multiple Record Nodes, one
+    of which only records event/timestamp metadata and has no continuous.dat.
+    """
+    cont_root = rec_dir / "continuous"
+    if not cont_root.exists():
+        return False
+    try:
+        for stream_dir in cont_root.iterdir():
+            if stream_dir.is_dir() and (stream_dir / "continuous.dat").exists():
+                return True
+    except (OSError, PermissionError):
+        return False
+    return False
 
 
 def _find_recording_dir(session_dir: Path, recording_num: int = 1) -> Path:
     """Find the recording directory within an Open Ephys session.
 
-    Searches for Record Node directories and returns the path to the
-    specified recording.
+    Iterates Record Node directories in name order and picks the first one
+    whose recording folder contains a non-empty `continuous.dat` (some
+    setups record events-only on additional nodes).
     """
     record_nodes = sorted(
         [d for d in session_dir.iterdir()
@@ -69,35 +88,48 @@ def _find_recording_dir(session_dir: Path, recording_num: int = 1) -> Path:
             f"No 'Record Node' directories found in {session_dir}"
         )
 
-    # Use the first record node (typically Record Node 101 or 104)
-    rec_node = record_nodes[0]
-
-    # Find experiment and recording directories (handle experiment1, experiment2, etc.)
-    experiments = sorted(
-        [d for d in rec_node.iterdir() if d.is_dir() and d.name.startswith("experiment")],
-        key=lambda p: p.name,
-    )
-    if not experiments:
-        raise FileNotFoundError(f"No experiment directories found in {rec_node}")
-
-    # Search for the requested recording across all experiments
-    for exp_dir in experiments:
-        rec_dir = exp_dir / f"recording{recording_num}"
-        if rec_dir.exists():
-            return rec_dir
-
-    # Fallback: find any recording in any experiment
-    for exp_dir in experiments:
-        recordings = sorted(
-            [d for d in exp_dir.iterdir() if d.is_dir() and d.name.startswith("recording")],
+    fallback: Optional[Path] = None
+    for rec_node in record_nodes:
+        experiments = sorted(
+            [d for d in rec_node.iterdir() if d.is_dir() and d.name.startswith("experiment")],
             key=lambda p: p.name,
         )
-        if recordings:
-            rec_dir = recordings[0]
-            logger.info(f"recording{recording_num} not found, using {exp_dir.name}/{rec_dir.name}")
-            return rec_dir
+        if not experiments:
+            continue
 
-    raise FileNotFoundError(f"No recording directories found in {rec_node}")
+        # Prefer the requested recording number in any experiment.
+        for exp_dir in experiments:
+            rec_dir = exp_dir / f"recording{recording_num}"
+            if rec_dir.exists():
+                if _rec_dir_has_continuous_dat(rec_dir):
+                    return rec_dir
+                if fallback is None:
+                    fallback = rec_dir
+
+        # Fallback within this node: any recording in any experiment.
+        for exp_dir in experiments:
+            recordings = sorted(
+                [d for d in exp_dir.iterdir() if d.is_dir() and d.name.startswith("recording")],
+                key=lambda p: p.name,
+            )
+            for rec_dir in recordings:
+                if _rec_dir_has_continuous_dat(rec_dir):
+                    logger.info(
+                        "recording%d not found in %s, using %s/%s",
+                        recording_num, rec_node.name, exp_dir.name, rec_dir.name,
+                    )
+                    return rec_dir
+                if fallback is None:
+                    fallback = rec_dir
+
+    if fallback is not None:
+        # Let the downstream loader raise a clearer error pointing at the
+        # missing continuous.dat (preserves prior behavior for malformed setups).
+        return fallback
+
+    raise FileNotFoundError(
+        f"No recording directories found in any Record Node under {session_dir}"
+    )
 
 
 
@@ -188,6 +220,7 @@ def read_oep(
     ecog_stream_idx: int = 0,
     recording_num: int = 1,
     has_temperature: bool = True,
+    stim_channel: Optional[int] = None,
 ) -> OEPData:
     """Read an Open Ephys binary recording session.
 
@@ -218,6 +251,11 @@ def read_oep(
         intercept / bit_volts are NaN. Downstream code treats NaN
         temperature gracefully (analyses produce NaN landmarks and empty
         plots rather than crashing).
+    stim_channel : 1-indexed analog stim channel on the ECoG stream (used by
+        opto experiments — the stimulator's command voltage is routed to one
+        of the Intan ADCs). If given, the channel is read, bit-volts scaled,
+        and returned as `OEPData.stim` (volts). If None, no stim channel is
+        loaded.
 
     Returns
     -------
@@ -270,6 +308,19 @@ def read_oep(
         emg_bit_volts = ecog_stream_info["channels"][emg_ch_idx]["bit_volts"]
         emg_signal *= emg_bit_volts
 
+    # --- Load stim channel (optional, used by opto experiments) ---
+    stim_signal: Optional[np.ndarray] = None
+    if stim_channel is not None:
+        stim_ch_idx = stim_channel - 1
+        if stim_ch_idx < 0 or stim_ch_idx >= ecog_data.shape[0]:
+            raise ValueError(
+                f"Stim channel {stim_channel} out of range "
+                f"(stream has {ecog_data.shape[0]} channels)"
+            )
+        stim_signal = ecog_data[stim_ch_idx, :].astype(np.float64)
+        stim_bit_volts = ecog_stream_info["channels"][stim_ch_idx]["bit_volts"]
+        stim_signal *= stim_bit_volts
+
     # --- Load temperature ---
     if not has_temperature:
         # No probe was connected for this recording - short-circuit and
@@ -293,6 +344,7 @@ def read_oep(
             ttl_states=ttl_states,
             ttl_timestamps=ttl_timestamps,
             metadata=oebin,
+            stim=stim_signal,
         )
 
     temp_cfg = TemperatureConfig()
@@ -373,4 +425,5 @@ def read_oep(
         ttl_states=ttl_states,
         ttl_timestamps=ttl_timestamps,
         metadata=oebin,
+        stim=stim_signal,
     )

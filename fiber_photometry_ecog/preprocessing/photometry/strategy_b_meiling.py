@@ -44,11 +44,10 @@ class MeilingStrategy:
             config = PhotometryConfig()
 
         cutoff = config.lowpass_cutoff_b
-        crop_s = config.biexp_crop_s
 
         # --- Steps 1-2: Low-pass filter + biexponential detrend ---
         detrended_470, detrended_405, expfit_470, _ = lowpass_and_detrend(
-            signal_470, signal_405, fs, cutoff, crop_s
+            signal_470, signal_405, fs, cutoff
         )
 
         # --- Step 3: OLS motion correction ---

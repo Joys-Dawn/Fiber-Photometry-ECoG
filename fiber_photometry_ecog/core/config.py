@@ -36,9 +36,6 @@ class PhotometryConfig:
     irls_max_iter: int = 50         # max IRLS iterations
     irls_tol: float = 1e-6          # convergence tolerance
 
-    # Biexponential fit (Strategy B only - Strategy C per Keevers 2025 does not detrend)
-    biexp_crop_s: float = 120.0     # seconds to crop from start if fit fails
-
     # Post-processing
     baseline_end_s: Optional[float] = None  # seconds; if None, must be set per session (heating start)
     # Strategy A detrending: HPF (per Chandni's detect_transients.m)

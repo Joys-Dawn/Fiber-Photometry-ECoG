@@ -6,39 +6,43 @@ Shared photometry utilities used across strategies.
 - High-pass filter for transient detection stream
 """
 
-import warnings
-
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.signal import butter, sosfiltfilt
 
 
 # ---------------------------------------------------------------------------
-# Biexponential photobleaching model
+# Biexponential photobleaching model (Meiling's parameterization)
 # ---------------------------------------------------------------------------
 
-def _biexp_model(t: np.ndarray, a1: float, tau1: float, a2: float, tau2: float, offset: float) -> np.ndarray:
-    """Biexponential decay: a1*exp(-t/tau1) + a2*exp(-t/tau2) + offset."""
-    return a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2) + offset
+def _biexp_model(
+    t: np.ndarray,
+    const: float,
+    amp_fast: float,
+    amp_slow: float,
+    tau_slow: float,
+    tau_multiplier: float,
+) -> np.ndarray:
+    """Biexponential decay (Meiling's parameterization).
 
-
-def _monoexp_model(t: np.ndarray, a: float, tau: float, off: float) -> np.ndarray:
-    """Monoexponential decay: a*exp(-t/tau) + offset."""
-    return a * np.exp(-t / tau) + off
+    tau_fast = tau_slow * tau_multiplier; with 0 <= tau_multiplier <= 1
+    this enforces tau_fast <= tau_slow and breaks the label-switching
+    ambiguity of two independent exponential components.
+    """
+    tau_fast = tau_slow * tau_multiplier
+    return const + amp_slow * np.exp(-t / tau_slow) + amp_fast * np.exp(-t / tau_fast)
 
 
 def fit_biexponential(
     signal: np.ndarray,
     fs: float,
-    crop_s: float = 120.0,
 ) -> np.ndarray:
-    """Fit a biexponential decay to model photobleaching.
+    """Fit a biexponential photobleaching curve (Meiling's exact recipe).
 
     Parameters
     ----------
     signal : 1-D fluorescence signal
     fs : sampling rate (Hz)
-    crop_s : seconds to crop from start if initial fit fails (per PASTa, Donka 2025)
 
     Returns
     -------
@@ -46,49 +50,22 @@ def fit_biexponential(
 
     Raises
     ------
-    RuntimeError if neither biexponential nor monoexponential fits converge.
+    RuntimeError if the fit does not converge.
     """
     n = len(signal)
     t = np.arange(n) / fs
 
-    # Initial guesses based on signal
-    amp = signal[0] - signal[-1]
-    p0 = [amp * 0.6, n / (3 * fs), amp * 0.4, n / (10 * fs), signal[-1]]
+    max_sig = np.max(signal)
+    p0 = [max_sig / 2, max_sig / 4, max_sig / 4, 3600.0, 0.1]
+    bounds = (
+        [0.0,     0.0,     0.0,     600.0,   0.0],
+        [max_sig, max_sig, max_sig, 36000.0, 1.0],
+    )
 
-    try:
-        popt, _ = curve_fit(_biexp_model, t, signal, p0=p0, maxfev=10000)
-        return _biexp_model(t, *popt)
-    except RuntimeError:
-        pass
-
-    # Fallback: crop initial transient and retry
-    crop_n = int(crop_s * fs)
-    if crop_n < n:
-        t_crop = t[crop_n:]
-        sig_crop = signal[crop_n:]
-        amp_c = sig_crop[0] - sig_crop[-1]
-        p0_c = [amp_c * 0.6, len(sig_crop) / (3 * fs), amp_c * 0.4, len(sig_crop) / (10 * fs), sig_crop[-1]]
-        try:
-            popt, _ = curve_fit(_biexp_model, t_crop - t_crop[0], sig_crop, p0=p0_c, maxfev=10000)
-            # Extrapolate to full length; clamp pre-crop region to t=0
-            # (negative time would cause exponential growth, not decay)
-            t_shifted = np.maximum(t - t[crop_n], 0)
-            fitted = _biexp_model(t_shifted, *popt)
-            return fitted
-        except RuntimeError:
-            pass
-
-    # Final fallback: monoexponential
-    p0_mono = [amp, n / (3 * fs), signal[-1]]
-    try:
-        popt, _ = curve_fit(_monoexp_model, t, signal, p0=p0_mono, maxfev=10000)
-        warnings.warn("Biexponential fit failed; using monoexponential fallback.")
-        return _monoexp_model(t, *popt)
-    except RuntimeError:
-        raise RuntimeError(
-            "Photobleaching fit failed (biexp and monoexp). "
-            "Check signal quality or try increasing crop_s."
-        )
+    popt, _ = curve_fit(
+        _biexp_model, t, signal, p0=p0, bounds=bounds, maxfev=1000
+    )
+    return _biexp_model(t, *popt)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +77,6 @@ def lowpass_and_detrend(
     signal_405: np.ndarray,
     fs: float,
     cutoff: float,
-    crop_s: float = 120.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Low-pass filter both channels, then biexp detrend.
 
@@ -110,7 +86,6 @@ def lowpass_and_detrend(
     signal_405 : isosbestic / control channel
     fs : sampling rate (Hz)
     cutoff : low-pass cutoff frequency (Hz)
-    crop_s : biexp fit crop window (seconds)
 
     Returns
     -------
@@ -120,8 +95,8 @@ def lowpass_and_detrend(
     filt_470 = sosfiltfilt(sos, signal_470)
     filt_405 = sosfiltfilt(sos, signal_405)
 
-    expfit_470 = fit_biexponential(filt_470, fs, crop_s=crop_s)
-    expfit_405 = fit_biexponential(filt_405, fs, crop_s=crop_s)
+    expfit_470 = fit_biexponential(filt_470, fs)
+    expfit_405 = fit_biexponential(filt_405, fs)
 
     return filt_470 - expfit_470, filt_405 - expfit_405, expfit_470, expfit_405
 
@@ -155,6 +130,39 @@ def z_score_baseline(
     sigma = np.std(baseline)
 
     return (signal - mu) / sigma
+
+
+def null_z(signal: np.ndarray) -> np.ndarray:
+    """Null-Z normalization: signal / sqrt(mean(signal^2)).
+
+    The Keevers IRLS dF/F is already centered on the IRLS-derived
+    baseline of zero, so "z-score relative to zero" only needs a scale
+    estimate, not a centering step. Keevers et al. (Neurophotonics 2025)
+    recommend this over standard baseline-window z-scoring because the
+    latter "reverts the signal mean to 0 (as per OLS), which may not
+    reflect the IRLS-derived baseline."
+
+    Reference implementation: github.com/philjrdb/RegressionSim/nullZ.m
+        function nullZ_data = nullZ(data)
+        nullZ_data = data ./ sqrt(mean(data.^2));
+
+    Using mean (not sum) of squared deviations keeps the scale
+    length-invariant, so longer recordings don't produce systematically
+    smaller normalized values than shorter ones.
+
+    NaNs in the input propagate through (`np.nanmean` only affects the
+    scale estimate; positions of NaN in the output match the input).
+    Returns an all-NaN array if the scale is zero or undefined.
+    """
+    finite = np.isfinite(signal)
+    if not finite.any():
+        return np.full_like(signal, np.nan, dtype=np.float64)
+    rms = float(np.sqrt(np.mean(signal[finite] ** 2)))
+    if not np.isfinite(rms) or rms == 0:
+        return np.full_like(signal, np.nan, dtype=np.float64)
+    out = np.array(signal, dtype=np.float64, copy=True)
+    out[finite] = signal[finite] / rms
+    return out
 
 
 # ---------------------------------------------------------------------------

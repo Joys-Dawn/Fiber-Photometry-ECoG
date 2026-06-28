@@ -17,7 +17,7 @@ from . import _style  # provides the @styled decorator used on PNG writers
 from ..core.cohort import classify_session
 from ..core.data_models import Session, TransientEvent
 from .colors import (
-    ECOG_COLOR, TEMP_COLOR, COHORT_COLORS,
+    ECOG_COLOR, TEMP_COLOR, COHORT_COLORS, cohort_color,
     LANDMARK_COLORS, LANDMARK_DISPLAY_LABELS, DFF_LABEL,
 )
 
@@ -71,7 +71,7 @@ def _draw_landmark_lines(
 
 
 def _cohort_color(session: Session) -> str:
-    return COHORT_COLORS[classify_session(session)]
+    return cohort_color(classify_session(session))
 
 
 # Filenames want "DS_nosz"/"WT" (no underscore between parts) while the
@@ -92,9 +92,11 @@ def _cohort_filename_tag(session: Session) -> str:
     (cf. UEO_aligned_traces_DS_sz.png, etc.). Without this, two sessions that
     share `(mouse_id, S#)` across cohorts - e.g. 2575_S1 in scn1a_seizure vs
     2575_S1 in scn1a_NOseizure - would silently overwrite each other's QC
-    plots.
+    plots. Custom cohorts (opto subfolders like "10HZ_DG_CPP") use the
+    classify_session string as-is.
     """
-    return _FILENAME_TAGS[classify_session(session)]
+    key = classify_session(session)
+    return _FILENAME_TAGS.get(key, key)
 
 
 @_style.styled
@@ -287,6 +289,202 @@ def plot_zoomed(
         # HTML is best-effort; never block the PNG output if plotly is broken.
         pass
 
+    return path
+
+
+# Opto plots reuse the UEO landmark color but relabel the line so the
+# experimenter sees the stim-event language they expect.
+_OPTO_LANDMARK_LABELS = {
+    **LANDMARK_DISPLAY_LABELS,
+    "ueo": "stim on",
+    "off": "stim off",
+}
+
+
+def _draw_landmark_lines_opto(axes, landmarks, offset: float = 0.0) -> None:
+    """Opto variant of `_draw_landmark_lines`: same colors / line style,
+    but the UEO / OFF lines are labelled ``stim on`` / ``stim off``
+    rather than ``seizure onset`` / ``seizure offset``."""
+    if landmarks is None:
+        return
+    entries = [
+        ("ueo", landmarks.ueo_time or landmarks.equiv_ueo_time),
+        ("off", landmarks.off_time or landmarks.equiv_off_time),
+    ]
+    xlim = axes[0].get_xlim()
+    top_ax = axes[0]
+    for key, t in entries:
+        if t is None:
+            continue
+        x = t - offset
+        if x < xlim[0] or x > xlim[1]:
+            continue
+        for ax in axes:
+            ax.axvline(
+                x, color=LANDMARK_COLORS[key], linestyle="--",
+                linewidth=0.8, alpha=0.7,
+            )
+        top_ax.text(
+            x, 1.02, _OPTO_LANDMARK_LABELS[key],
+            transform=top_ax.get_xaxis_transform(),
+            ha="center", va="bottom",
+            color=LANDMARK_COLORS[key],
+            clip_on=False,
+        )
+
+
+@_style.styled
+def plot_sanity_check_opto(
+    session: Session,
+    output_dir: str,
+    transients: Optional[List[TransientEvent]] = None,
+) -> str:
+    """Opto variant of the full-trace sanity check. Four panels (no ECoG, no
+    temperature; opto stim added). All photometry traces are black; the 470
+    and 405 channels are distinguished by linestyle. Landmark labels read
+    ``stim on`` / ``stim off`` instead of ``seizure onset`` / ``offset``.
+
+    Subplots:
+        1. Raw 470 (solid) + 405 (dashed), both black
+        2. Corrected z-ΔF/F (black)
+        3. HPF + detected transients (black, transient marks black)
+        4. Opto stim raw trace (black)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    raw = session.raw
+    proc = session.processed
+    time_s = proc.time
+
+    if transients is None:
+        transients = session.transients
+
+    fig, axes = plt.subplots(4, 1, figsize=(24, 18), sharex=True)
+
+    # 1. Raw 470 (solid) + 405 (dashed) — both black, distinguished by style.
+    ax = axes[0]
+    ax.plot(time_s, raw.signal_470, color="black", linewidth=0.3, label="470nm")
+    ax.plot(time_s, raw.signal_405, color="black", linewidth=0.3,
+            linestyle="--", label="405nm")
+    ax.set_ylabel("Raw (V)")
+    ax.legend(loc="upper right")
+
+    # 2. Corrected z-ΔF/F.
+    ax = axes[1]
+    ax.plot(time_s, proc.photometry.dff_zscore, color="black", linewidth=0.3)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_ylabel(DFF_LABEL)
+
+    # 3. HPF stream + detected transients.
+    _used_hpf = (
+        getattr(session.preprocessing_config, "photometry", None)
+        and session.preprocessing_config.photometry.apply_hpf
+    )
+    _det_label = f"HPF {DFF_LABEL}" if _used_hpf else DFF_LABEL
+    ax = axes[2]
+    ax.plot(time_s, proc.photometry.dff_hpf, color="black", linewidth=0.3)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    if transients:
+        peak_times = [t.peak_time for t in transients]
+        peak_idxs = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
+        ax.plot(
+            np.array(peak_times),
+            proc.photometry.dff_hpf[peak_idxs],
+            "v", color="black", markersize=3,
+        )
+    ax.set_ylabel(_det_label)
+
+    # 4. Opto stim raw trace (no axis crash if it's None — render an empty
+    # panel and label it as missing so the layout stays consistent).
+    ax = axes[3]
+    if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
+        ax.plot(time_s, raw.stim_raw, color="black", linewidth=0.5)
+        ax.set_ylabel("Opto stim (V)")
+    else:
+        ax.text(0.5, 0.5, "no opto stim channel",
+                ha="center", va="center", transform=ax.transAxes,
+                color="gray")
+        ax.set_ylabel("Opto stim")
+    ax.set_xlabel("Time (s)")
+
+    _draw_landmark_lines_opto(axes, session.landmarks, offset=0.0)
+
+    fig.suptitle(
+        f"{session.mouse_id} S{session.heating_session} - opto sanity check"
+    )
+
+    path = os.path.join(
+        output_dir,
+        f"{session.mouse_id}_S{session.heating_session}_"
+        f"{_cohort_filename_tag(session)}_full_trace.png",
+    )
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close("all")
+    return path
+
+
+@_style.styled
+def plot_zoomed_opto(
+    session: Session,
+    output_dir: str,
+    window_s: float = 150.0,
+) -> str:
+    """Opto variant of `plot_zoomed`. Two stacked panels centered on stim
+    onset: dF/F on top, the opto stim trace below. All-black. Landmark
+    lines say ``stim on`` / ``stim off``."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    raw = session.raw
+    proc = session.processed
+    time_s = proc.time
+    landmarks = session.landmarks
+
+    t_zero = (landmarks.ueo_time
+              or landmarks.equiv_ueo_time
+              or landmarks.heating_start_time)
+    if t_zero is None:
+        return ""
+
+    rel_time = time_s - t_zero
+    mask = (rel_time >= -window_s) & (rel_time <= window_s)
+
+    fig, axes = plt.subplots(2, 1, figsize=(18, 12), sharex=True)
+
+    # 1. z-ΔF/F
+    ax = axes[0]
+    ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask],
+            color="black", linewidth=0.4)
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_ylabel(DFF_LABEL)
+    ax.set_xlim(-window_s, window_s)
+
+    # 2. Opto stim trace.
+    ax = axes[1]
+    if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
+        ax.plot(rel_time[mask], raw.stim_raw[mask],
+                color="black", linewidth=0.4)
+        ax.set_ylabel("Opto stim (V)")
+    else:
+        ax.text(0.5, 0.5, "no opto stim channel",
+                ha="center", va="center", transform=ax.transAxes,
+                color="gray")
+        ax.set_ylabel("Opto stim")
+    ax.set_xlabel("Time relative to stim onset (s)")
+    ax.set_xlim(-window_s, window_s)
+
+    _draw_landmark_lines_opto(axes, landmarks, offset=t_zero)
+
+    fig.suptitle(
+        f"{session.mouse_id} S{session.heating_session} - opto zoomed"
+    )
+
+    path = os.path.join(
+        output_dir,
+        f"{session.mouse_id}_S{session.heating_session}_"
+        f"{_cohort_filename_tag(session)}_peri_ictal.png",
+    )
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close("all")
     return path
 
 

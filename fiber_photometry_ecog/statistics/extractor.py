@@ -126,6 +126,20 @@ def _extract_spike_triggered(group_result) -> List[SessionScalar]:
     return out
 
 
+def _extract_opto_response(group_result) -> List[SessionScalar]:
+    out: List[SessionScalar] = []
+    for sr in group_result.session_results:
+        out.append((sr.mouse_id, sr.heating_session,
+                    "stim_response_max_40s",
+                    _safe_float(sr.stim_response_max_40s)))
+        out.append((sr.mouse_id, sr.heating_session,
+                    "stim_response_min_40s",
+                    _safe_float(sr.stim_response_min_40s)))
+        out.append((sr.mouse_id, sr.heating_session,
+                    "stim_auc_40s", _safe_float(sr.stim_auc_40s)))
+    return out
+
+
 @dataclass
 class ModuleSpec:
     key: str
@@ -141,6 +155,7 @@ _SCALAR_REGISTRY: List[ModuleSpec] = [
     ModuleSpec("Ictal mean", "means", _extract_ictal_mean),
     ModuleSpec("Postictal", "means", _extract_postictal),
     ModuleSpec("Spike-triggered averages", "means", _extract_spike_triggered),
+    ModuleSpec("Opto response", "means", _extract_opto_response),
 ]
 
 

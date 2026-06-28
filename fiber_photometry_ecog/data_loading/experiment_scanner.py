@@ -297,12 +297,34 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     log_path = xlsx_files[0]
     logger.info("Reading data log: %s", log_path.name)
 
-    # Handle spec-format logs with a banner row ("Step 1", "Step 2", "Step 3")
-    df = pd.read_excel(log_path, header=0)
-    banner = any("step" in str(c).lower() or "unnamed" in str(c).lower()
-                 for c in df.columns)
-    if banner:
-        df = pd.read_excel(log_path, header=1)
+    # Some opto logs (CPP_treatment, DG_local_release) split per-cohort
+    # metadata across multiple sheets — one sheet per cohort. Read every
+    # sheet and concatenate; without this, only the first sheet's mice
+    # get matched, and sessions on disk under other cohort folders fail
+    # the loader's stim_channel / heating_start check.
+    import openpyxl
+    wb = openpyxl.load_workbook(log_path, read_only=True)
+    sheet_names = wb.sheetnames
+    wb.close()
+
+    per_sheet = []
+    for sheet in sheet_names:
+        # Per-sheet banner-row detection: each sheet may or may not have
+        # the "Step 1 / Step 2 / Step 3" banner above the real header row.
+        df_probe = pd.read_excel(log_path, sheet_name=sheet, header=0)
+        banner = any("step" in str(c).lower() or "unnamed" in str(c).lower()
+                     for c in df_probe.columns)
+        if banner:
+            df_sheet = pd.read_excel(log_path, sheet_name=sheet, header=1)
+        else:
+            df_sheet = df_probe
+        df_sheet.columns = [str(c).strip() for c in df_sheet.columns]
+        per_sheet.append(df_sheet)
+
+    # Outer-concat: sheets with extra columns (e.g. genotype only on one
+    # sheet) keep those columns; missing entries become NaN, which the
+    # downstream per-column parsers already treat as "absent".
+    df = pd.concat(per_sheet, ignore_index=True, sort=False) if per_sheet else pd.DataFrame()
     df.columns = [str(c).strip() for c in df.columns]
 
     # Locate columns (by substring match)
@@ -311,7 +333,11 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     date_col = _find_col(cols, ["date"])
     cohort_col = _find_col(cols, ["cohort"])
     genotype_col = _find_col(cols, ["genotype"])
-    session_col = _find_col(cols, ["heating session"])
+    # "heating session" for hyperthermia logs; "sessions" for opto logs where
+    # the column names a per-mouse, per-cohort recording index rather than a
+    # heating bout. Both populate the same `heating_session` field.
+    session_col = (_find_col(cols, ["heating session"])
+                   or _find_col(cols, ["sessions"]))
     seizure_col = _find_col(cols, ["seizure"], forbidden=["equivalent", "eec", "ueo", "off"])
     sudep_col = _find_col(cols, ["sudep"]) or _find_col(cols, ["fatal"])
     include_col = _find_col(cols, ["include"])
@@ -322,6 +348,8 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     ecog_ch_col = _find_col(cols, ["channel", "ecog"])
     emg_ch_col = _find_col(cols, ["channel", "emg"])
     temp_ch_col = _find_col(cols, ["channel", "temp"])
+    # Opto stim channel (analog ADC carrying the stimulator command voltage)
+    stim_ch_col = _find_col(cols, ["opto", "stim", "channel"])
     eec_col = _find_col(cols, ["eec", "time"], forbidden=["equivalent", "temp"])
     ueo_col = _find_col(cols, ["ueo", "time"], forbidden=["equivalent", "temp"])
     off_col = _find_col(cols, ["off", "time"], forbidden=["equivalent", "temp"])
@@ -424,6 +452,7 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
         ecog_ch = _parse_int(ecog_ch_col)
         emg_ch = _parse_int(emg_ch_col)
         temp_ch = _parse_int(temp_ch_col)
+        stim_ch = _parse_int(stim_ch_col)
         heating_session = _parse_int(session_col) or 1
 
         include_for_baseline = True
@@ -465,6 +494,7 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
             "ecog_channel": ecog_ch,
             "emg_channel": emg_ch,
             "temperature_channel": temp_ch,
+            "stim_channel": stim_ch,
             "eec_time": eec_time,
             "ueo_time": ueo_time,
             "off_time": off_time,

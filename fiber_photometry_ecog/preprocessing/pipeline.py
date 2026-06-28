@@ -10,6 +10,7 @@ import numpy as np
 from ..core.config import PreprocessingConfig, TRANSIENT_CONFIGS
 from ..core.data_models import ProcessedData, Session
 from .ecog import filter_ecog
+from .stim_detection import detect_stim_burst
 from .temperature import process_temperature
 from .transient_detection import detect_transients
 from .spike_detection import detect_spikes
@@ -48,6 +49,38 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
     fs = raw.fs
     strategy_name = config.photometry.strategy
 
+    # --- Opto-stim landmark detection ---
+    # When the OEP session carries an analog stim channel (set via the data
+    # log's `opto-stim channel` column), the first/last threshold crossings
+    # of that channel become the seizure-equivalent UEO/OFF landmarks. This
+    # runs before temperature so the landmarks are already set when the
+    # temperature module pulls temperatures at UEO/OFF. Opto sessions don't
+    # have a heating phase, so the stim onset doubles as the baseline-end
+    # marker that downstream z-score and spike-detection windows depend on.
+    if raw.stim_raw is not None:
+        onset_s, offset_s = detect_stim_burst(raw.stim_raw, fs)
+        session.landmarks.ueo_time = onset_s
+        session.landmarks.off_time = offset_s
+        # Opto sessions have wildly different pre-stim durations across
+        # mice (e.g., 118s vs 414s in CPP_treatment). Z-scoring against the
+        # full pre-stim window leaks recording-duration variance into the
+        # normalization and biases group comparisons. Fix the z-score
+        # baseline to the first 100s so every opto session is normalized
+        # against the same window. Clamped in case stim arrives earlier.
+        if session.landmarks.zscore_baseline_end_time is None:
+            session.landmarks.zscore_baseline_end_time = min(100.0, onset_s)
+        # Drive heating_start_time off the same baseline window so
+        # spike-detection (which keys on heating_start_time as its noise
+        # window) and any downstream "pre-baseline" math see the same
+        # 100 s window the z-score uses.
+        if session.landmarks.heating_start_time is None:
+            session.landmarks.heating_start_time = session.landmarks.zscore_baseline_end_time
+
+    # Hyperthermia / PTZ: z-score against the same window analysis already
+    # treats as "baseline" (everything before heating start).
+    if session.landmarks.zscore_baseline_end_time is None:
+        session.landmarks.zscore_baseline_end_time = session.landmarks.heating_start_time
+
     # --- Temperature ---
     temp_result = process_temperature(
         raw.temperature_raw, raw.temp_bit_volts, fs, config.temperature,
@@ -82,9 +115,17 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
     strategy = STRATEGY_MAP[strategy_name]()
     phot_result = strategy.preprocess(raw.signal_470, raw.signal_405, fs, config.photometry)
 
-    # Mean stream: z-score relative to baseline
+    zscore_baseline_end_s = session.landmarks.zscore_baseline_end_time
+
+    # Mean stream: baseline-window z-score for every strategy.
+    # Hyperthermia normalizes against everything before heating_start_time;
+    # opto clamps the window to the first 100 s (set above). Strategy C
+    # uses the same baseline window so hyperthermia C is comparable to
+    # hyperthermia B. Opto C still wants raw dF/F (per the divergent
+    # pre-stim baselines documented in run_opto._opto_recompute_dff_zscore),
+    # which run_opto applies as a post-pipeline override on dff_zscore.
     phot_result.dff_zscore = z_score_baseline(
-        phot_result.dff, fs, session.landmarks.heating_start_time)
+        phot_result.dff, fs, zscore_baseline_end_s)
 
     # Transient stream: detrend, then baseline z-score
     if not config.photometry.apply_hpf:
@@ -98,7 +139,7 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         # Strategy A: HPF then baseline z-score (PASTa/Donka 2025)
         dff_hpf_raw = highpass_filter(phot_result.dff, fs)
         phot_result.dff_hpf = z_score_baseline(
-            dff_hpf_raw, fs, session.landmarks.heating_start_time)
+            dff_hpf_raw, fs, zscore_baseline_end_s)
         # A measures amplitude/trough on raw dF/F (per Chandni's detect_transients.m col 6-7)
         dff_for_detection = phot_result.dff
     else:
@@ -106,7 +147,7 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         dff_detrended = detrend_moving_average(
             phot_result.dff, fs, config.photometry.detrend_window_s)
         phot_result.dff_hpf = z_score_baseline(
-            dff_detrended, fs, session.landmarks.heating_start_time)
+            dff_detrended, fs, zscore_baseline_end_s)
         # B/C: Wallace ProM measures prominence and amplitude on the
         # preprocessed (detrended) %dF/F, not the raw dF/F (per Wallace 2025)
         dff_for_detection = dff_detrended

@@ -582,6 +582,13 @@ class FiberPhotometryApp:
             # Look up metadata from log
             if log_lookup and (mouse_id, date_str) in log_lookup:
                 d.update(log_lookup[(mouse_id, date_str)])
+            elif log_lookup and any(m == mouse_id for (m, _) in log_lookup):
+                # Opto logs commonly have one row per mouse (covering baseline
+                # and paired post-treatment sessions on different dates). Fall
+                # back to the first matching mouse row so per-mouse settings
+                # like stim_channel propagate to later sessions.
+                mouse_key = next(k for k in log_lookup if k[0] == mouse_id)
+                d.update(log_lookup[mouse_key])
             else:
                 # Defaults if not in log
                 cohort = d["cohort"]
@@ -592,6 +599,10 @@ class FiberPhotometryApp:
                 d["exclusion_reason"] = None
                 d["heating_start"] = None
 
+            # Preserve the on-disk subfolder name so opto sessions can use it
+            # as their analytical cohort label (set as cohort_override at
+            # session-load time below).
+            d["folder_cohort"] = d["cohort"]
             # Determine cohort from metadata (genotype × seized).
             d["cohort"] = classify_from_metadata(d["genotype"], d["seizure"])
 
@@ -603,7 +614,12 @@ class FiberPhotometryApp:
         for d in discovered:
             include_str = "yes" if d["include"] else "no"
             has_data = "ready" if d["oep_path"] and d["ppd_path"] else "missing"
-            heat = str(int(d["heating_start"])) if d["heating_start"] else "?"
+            if d["heating_start"]:
+                heat = str(int(d["heating_start"]))
+            elif d.get("stim_channel") is not None:
+                heat = "auto (stim)"
+            else:
+                heat = "?"
             self.session_tree.insert(
                 "", "end",
                 values=(d["cohort"], d["mouse_id"], d["genotype"],
@@ -657,12 +673,18 @@ class FiberPhotometryApp:
         emg_ch_str = self.emg_ch_var.get().strip()
         emg_ch = int(emg_ch_str) if emg_ch_str else None
 
+        # Opto sessions have no heating phase; the stim onset is auto-detected
+        # later and used as the baseline-end marker. They're identified by the
+        # presence of an `opto-stim channel` in the data log.
         to_load = [d for d in self._discovered_sessions
                     if d["include"] and d["oep_path"] and d["ppd_path"]
-                    and d.get("heating_start") is not None]
+                    and (d.get("heating_start") is not None
+                         or d.get("stim_channel") is not None)]
 
         if not to_load:
-            messagebox.showerror("Error", "No loadable sessions (check include status and heating start times).")
+            messagebox.showerror("Error",
+                "No loadable sessions (check include status and heating start times "
+                "/ opto-stim channel).")
             return
 
         self.running = True
@@ -682,11 +704,13 @@ class FiberPhotometryApp:
                     sess_ecog_ch = d.get("ecog_channel") or ecog_ch
                     sess_emg_ch = d.get("emg_channel") if d.get("emg_channel") is not None else emg_ch
                     sess_temp_ch = d.get("temperature_channel")
+                    sess_stim_ch = d.get("stim_channel")
                     oep = read_oep(
                         d["oep_path"],
                         ecog_channel=sess_ecog_ch,
                         emg_channel=sess_emg_ch,
                         temperature_channel=sess_temp_ch,
+                        stim_channel=sess_stim_ch,
                     )
                     sync = synchronize(ppd, oep)
                     self._log_loading(
@@ -712,6 +736,7 @@ class FiberPhotometryApp:
                         temp_intercept=sync.temp_intercept,
                         time=sync.time,
                         fs=sync.fs,
+                        stim_raw=sync.stim,
                     )
 
                     session = Session(
@@ -726,6 +751,10 @@ class FiberPhotometryApp:
                         raw=raw,
                     )
                     session.cohort = d["cohort"]
+                    # Opto sessions group by the disk subfolder name (e.g.
+                    # "10HZ_DG_CPP"), not the DS/WT × seized bucket.
+                    if d.get("stim_channel") is not None:
+                        session.cohort_override = d.get("folder_cohort")
                     session.date = d.get("date")
                     session.session_name = d.get("session_name")
                     self.sessions.append(session)
@@ -1070,6 +1099,10 @@ class FiberPhotometryApp:
                                 text=f"{lbl}: {s} ({idx+1}/{t})"))
 
                     session.preprocessing_config = config
+                    # For opto, heating_start_time is None here and gets set
+                    # to the stim onset inside preprocess_session. The strategies
+                    # already z-score off session.landmarks directly, so this
+                    # config field is a label, not load-bearing.
                     config.photometry.baseline_end_s = session.landmarks.heating_start_time
 
                     try:

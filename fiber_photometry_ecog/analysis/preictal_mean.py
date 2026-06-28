@@ -70,6 +70,33 @@ def compute_preictal_mean(
 
     sessions = [s for s in sessions if s.include_for_baseline]
 
+    # Ictal window availability check — all-or-none-or-crash. ictal_mean
+    # is computed when (ueo_t, off_t) form a valid window. If some sessions
+    # have it and some don't we refuse to silently drop them; either the
+    # paradigm has no ictal window (controls in some paradigms, returning
+    # NaN cohort mean is correct) or all sessions have one.
+    def _has_ictal_window(s):
+        ueo = get_ueo_time(s)
+        off = get_off_time(s)
+        if ueo is None or off is None or not (off > ueo):
+            return False
+        fs = s.processed.fs
+        i_off = time_to_index(off, fs)
+        i_ueo = time_to_index(ueo, fs)
+        sig_len = len(s.processed.photometry.dff_zscore)
+        return i_off > i_ueo and i_off <= sig_len
+
+    with_window = [s for s in sessions if _has_ictal_window(s)]
+    if 0 < len(with_window) < len(sessions):
+        missing = [(s.mouse_id, s.heating_session) for s in sessions
+                   if not _has_ictal_window(s)]
+        raise ValueError(
+            f"Pre-ictal mean: asymmetric ictal-window availability "
+            f"({len(with_window)}/{len(sessions)}). Sessions missing valid "
+            f"(ueo_time, off_time, off>ueo): {missing}. Either all sessions "
+            f"in this cohort have a valid ictal window or none should."
+        )
+
     session_results = []
     bl_means = []
     eh_means = []

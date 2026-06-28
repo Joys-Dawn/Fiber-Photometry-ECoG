@@ -17,7 +17,18 @@ from .config import PreprocessingConfig
 @dataclass
 class SessionLandmarks:
     """Temporal and temperature landmarks for a recording session."""
-    heating_start_time: float               # seconds from recording start
+    # Time at which the experimental phase begins (heating onset for hyperthermia,
+    # auto-set to stim onset for opto). Acts as the baseline-end marker for
+    # z-scoring, spike-detection statistics, and pre/post-ictal windowing.
+    # Required for hyperthermia (read from the data log); for opto it is
+    # auto-populated by stim detection during preprocess_session.
+    heating_start_time: Optional[float] = None  # seconds from recording start
+    # End of the window used to z-score the photometry signal and to compute
+    # spike-detection noise stats. Decoupled from heating_start_time so opto
+    # sessions (which auto-set heating_start_time = stim_onset for analysis
+    # window math) can use a fixed pre-stim window for normalization
+    # consistency across sessions. If None, falls back to heating_start_time.
+    zscore_baseline_end_time: Optional[float] = None  # seconds from recording start
     eec_time: Optional[float] = None        # electrographic event criterion (None for controls)
     ueo_time: Optional[float] = None        # unequivocal electrographic onset
     behavioral_onset_time: Optional[float] = None
@@ -80,6 +91,9 @@ class RawData:
     temp_intercept: float
     time: np.ndarray
     fs: float
+    # Opto-stim analog channel, post-sync trimming/decimation. None for non-opto
+    # sessions. Carried in volts (already bit-scaled by oep_reader).
+    stim_raw: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -124,3 +138,8 @@ class Session:
     cohort: str = ""
     date: Optional[str] = None
     session_name: Optional[str] = None
+    # If set, classify_session returns this string instead of the
+    # genotype-by-seizure analytical bucket. Used by paradigms where the
+    # meaningful group axis isn't DS/WT × seized (e.g. opto, where the
+    # cohort is the subfolder name like "10HZ_DG_CPP").
+    cohort_override: Optional[str] = None

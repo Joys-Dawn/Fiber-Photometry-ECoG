@@ -185,15 +185,25 @@ def _bin_transients_by_temperature(
     amp_sums = np.zeros(n_bins)
     hw_sums = np.zeros(n_bins)
 
-    # No-temperature paradigm (PTZ): ueo_temp is None, every transient has
-    # temperature_at_peak=None. Return zero counts + NaN per bin so the
-    # group aggregator still gets a row of the right shape.
+    # No-temperature paradigm (PTZ / opto): ueo_temp is None, every transient
+    # has temperature_at_peak=None. Return NaN per bin (frequency, amp, hw)
+    # so the group aggregator still gets a row of the right shape and the
+    # "is this cohort temperature-aware?" gate in group_plots.py can
+    # distinguish "no temp" from "zero transients in this bin".
     if ueo_temp is None:
-        return counts, np.full(n_bins, np.nan), np.full(n_bins, np.nan)
+        return (np.full(n_bins, np.nan),
+                np.full(n_bins, np.nan),
+                np.full(n_bins, np.nan))
 
     for t in transients:
         if t.temperature_at_peak is None:
-            continue
+            raise ValueError(
+                f"Pre-ictal transient binning: transient at peak_time="
+                f"{t.peak_time:.3f}s has temperature_at_peak=None even "
+                f"though this is a temperature-aware paradigm "
+                f"(ueo_temp={ueo_temp:.3f}). Every transient must have a "
+                f"resolved temperature here — silent skip disabled."
+            )
         rel_temp = t.temperature_at_peak - ueo_temp
         idx = np.searchsorted(bin_edges, rel_temp, side='right') - 1
         if 0 <= idx < n_bins:

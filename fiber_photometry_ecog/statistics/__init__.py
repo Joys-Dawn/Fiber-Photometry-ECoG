@@ -13,18 +13,25 @@ extracts per-session scalar measurements, and writes one CSV per
 output folder (means / transients).
 """
 
-from .config import StatsConfig
+from .config import PairedStatsConfig, StatsConfig
 from .decision import should_use_parametric
 from .independent import (
     IndependentTestResult,
     compare_independent_groups,
 )
-from .runner import run_group_comparisons
+from .lmm_paired import compare_paired_lmm
+from .paired import PairedTestResult, compare_paired
+from .runner import run_group_comparisons, run_paired_comparisons
 
 __all__ = [
     "StatsConfig",
+    "PairedStatsConfig",
     "should_use_parametric",
     "IndependentTestResult",
     "compare_independent_groups",
+    "PairedTestResult",
+    "compare_paired",
+    "compare_paired_lmm",
     "run_group_comparisons",
+    "run_paired_comparisons",
 ]

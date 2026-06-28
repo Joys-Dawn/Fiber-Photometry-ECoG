@@ -70,6 +70,8 @@ def save_session(session: Session, sessions_dir: Path) -> Path:
         arrays["raw_time"] = raw.time
         if raw.emg is not None:
             arrays["raw_emg"] = raw.emg
+        if raw.stim_raw is not None:
+            arrays["raw_stim_raw"] = raw.stim_raw
 
     proc = session.processed
     if proc is not None:
@@ -99,6 +101,7 @@ def save_session(session: Session, sessions_dir: Path) -> Path:
         "exclusion_reason": session.exclusion_reason,
         "experiment_label": session.experiment_label,
         "cohort": session.cohort,
+        "cohort_override": session.cohort_override,
         "date": session.date,
         "session_name": session.session_name,
         "include_for_baseline": session.include_for_baseline,
@@ -170,6 +173,7 @@ def load_session(path: Path) -> Session:
         temp_intercept=meta.get("raw_temp_intercept", 8.81),
         time=data["raw_time"],
         fs=meta["raw_fs"],
+        stim_raw=data["raw_stim_raw"] if "raw_stim_raw" in data else None,
     )
 
     # Reconstruct processed
@@ -234,6 +238,7 @@ def load_session(path: Path) -> Session:
     )
     session.spikes = spikes
     session.cohort = meta.get("cohort") or ""
+    session.cohort_override = meta.get("cohort_override")
     session.date = meta.get("date")
     session.session_name = meta.get("session_name")
 

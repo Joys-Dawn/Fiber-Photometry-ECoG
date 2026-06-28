@@ -39,3 +39,22 @@ class StatsConfig:
         """Return the display label for a cohort key."""
         names = self.display_names or DEFAULT_DISPLAY_NAMES
         return names.get(cohort_key, cohort_key)
+
+
+@dataclass
+class PairedStatsConfig:
+    """Configuration for within-subject (LMM-based) comparisons.
+
+    The model is always ``value ~ cohort + (1|mouse_id)`` fit by REML on
+    one row per session. When the LMM is singular or fails to converge,
+    falls back to an INDEPENDENT-groups test on session-level data
+    (Welch's t / Mann-Whitney U) with a loud warning. Per-mouse averaging
+    is never performed — it would discard the repeats for mice that
+    contributed more than one session per cohort.
+
+    Attributes
+    ----------
+    alpha : significance threshold for annotation purposes.
+    """
+
+    alpha: float = 0.05

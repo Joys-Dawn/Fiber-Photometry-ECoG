@@ -45,6 +45,7 @@ class SyncResult:
     scaling: float             # linear mapping slope
     offset: float              # linear mapping offset (seconds)
     residual_ms: float         # mean residual after linear fit (ms)
+    stim: Optional[np.ndarray] = None  # opto-stim ADC channel, trimmed to overlap
 
 
 def _detect_rising_edges_ppd(ppd: PPDData) -> np.ndarray:
@@ -175,13 +176,27 @@ def synchronize(
     # --- Step 6: Determine overlapping time region ---
     # Use sample_numbers for absolute time (not 0-indexed) to match TTL timebase
     t_eeg = oep.sample_numbers.astype(np.float64) / oep.fs
-    t_min = max(t_photo_aligned[0], t_eeg[0])
-    t_max = min(t_photo_aligned[-1], t_eeg[-1])
+
+    # Opto sessions: keep the full PPD photometry span. OEP recordings for
+    # opto are often started just before stim and stopped soon after, which
+    # would otherwise throw away minutes of post-stim photometry. We detect
+    # opto via `oep.stim is not None` (a stim_channel was provided to the
+    # OEP reader). ECoG/EMG/stim/temperature stay clipped to OEP — those
+    # signals only exist where OEP was recording — and are NaN-padded in
+    # the extended window so downstream code sees a uniform time axis.
+    is_opto = oep.stim is not None
+    if is_opto:
+        t_min = float(t_photo_aligned[0])
+        t_max = float(t_photo_aligned[-1])
+    else:
+        t_min = max(t_photo_aligned[0], t_eeg[0])
+        t_max = min(t_photo_aligned[-1], t_eeg[-1])
 
     eeg_mask = (t_eeg >= t_min) & (t_eeg <= t_max)
     t_eeg_common = t_eeg[eeg_mask]
     ecog_common = oep.ecog[eeg_mask]
     emg_common = oep.emg[eeg_mask] if oep.emg is not None else None
+    stim_common = oep.stim[eeg_mask] if oep.stim is not None else None
     # Temperature may come from a different stream with slightly different length
     n_eeg = len(oep.ecog)
     temp = oep.temperature_raw[:n_eeg] if len(oep.temperature_raw) >= n_eeg else np.pad(
@@ -207,9 +222,44 @@ def synchronize(
         ecog_common = decimate(ecog_common, factor)
         if emg_common is not None:
             emg_common = decimate(emg_common, factor)
+        if stim_common is not None:
+            # Stim is a square pulse train (not lowpass-friendly). Subsample
+            # instead of decimate to preserve edges. Each pulse is many samples
+            # wide so subsampling stays sufficient for threshold-based onset
+            # detection.
+            stim_common = stim_common[::factor]
         temp_common = decimate(temp_common, factor)
         t_eeg_common = t_eeg_common[::factor]  # subsample timestamps to match
         output_fs = TARGET_FS
+
+    if is_opto:
+        # Build a uniform timebase covering the full PPD aligned extent at
+        # output_fs, then place the OEP signals at the matching indices and
+        # NaN-pad the rest. Photometry is always defined within this range
+        # because we derived t_min/t_max from the PPD timeline.
+        n_out = int(round((t_max - t_min) * output_fs)) + 1
+        t_full = np.linspace(t_min, t_max, n_out)
+
+        def _pad(arr, src_t):
+            if arr is None:
+                return None
+            out = np.full(n_out, np.nan, dtype=np.float64)
+            if len(src_t) == 0:
+                return out
+            mask = (t_full >= src_t[0]) & (t_full <= src_t[-1])
+            idx_out = np.flatnonzero(mask)
+            if len(idx_out) == 0:
+                return out
+            idx_src = np.searchsorted(src_t, t_full[idx_out])
+            idx_src = np.clip(idx_src, 0, len(arr) - 1)
+            out[idx_out] = arr[idx_src]
+            return out
+
+        ecog_common = _pad(ecog_common, t_eeg_common)
+        emg_common = _pad(emg_common, t_eeg_common)
+        stim_common = _pad(stim_common, t_eeg_common)
+        temp_common = _pad(temp_common, t_eeg_common)
+        t_eeg_common = t_full
 
     # --- Step 8: PCHIP interpolate photometry onto ECoG timebase ---
     signal_470_interp = PchipInterpolator(t_photo_aligned, ppd.signal_470)(t_eeg_common)
@@ -234,4 +284,5 @@ def synchronize(
         scaling=scaling,
         offset=offset,
         residual_ms=residual_ms,
+        stim=stim_common,
     )

@@ -9,6 +9,7 @@ and baseline-subtracted.
 AUC via trapezoidal method (photometry only).
 """
 
+import logging
 from dataclasses import dataclass
 from typing import List
 
@@ -19,6 +20,8 @@ from ..core.data_models import Session
 from typing import Tuple
 
 from ._helpers import get_signal_and_time, get_ecog_filtered, time_to_index
+
+log = logging.getLogger(__name__)
 
 
 def _group_mean_sem(
@@ -64,24 +67,35 @@ def _polarity_align_eeg(eeg_seg: np.ndarray, center_idx: int, fs: float) -> np.n
     """Flip EEG segment if spike peak is negative, so all spikes appear upward.
 
     Checks mean value in +/-50ms window around center. If negative, flips.
+    Uses nanmean so NaN-padded edge segments still get a polarity decision.
     """
     peak_window = int(0.05 * fs)  # 50ms
     lo = max(0, center_idx - peak_window)
     hi = min(len(eeg_seg), center_idx + peak_window)
-    peak_val = np.mean(eeg_seg[lo:hi])
+    peak_val = float(np.nanmean(eeg_seg[lo:hi]))
     if peak_val < 0:
         return -eeg_seg
     return eeg_seg
 
 
 def _compute_mean_sem(traces: List[np.ndarray], n_out: int):
-    """Compute mean and SEM from a list of trace arrays."""
+    """Compute mean and SEM from a list of (possibly NaN-padded) trace arrays.
+
+    Uses nan-aware reductions so that edge-clipped spikes contribute where
+    data exists and only the missing samples are excluded.
+    """
     n = len(traces)
     if n > 0:
         trace_mat = np.array(traces)
-        mean_trace = np.mean(trace_mat, axis=0)
-        sem_trace = (np.std(trace_mat, axis=0, ddof=1) / np.sqrt(n)
-                     if n > 1 else np.zeros(n_out))
+        mean_trace = np.nanmean(trace_mat, axis=0)
+        n_per_sample = np.sum(~np.isnan(trace_mat), axis=0)
+        if n > 1:
+            std_trace = np.nanstd(trace_mat, axis=0, ddof=1)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sem_trace = std_trace / np.sqrt(n_per_sample)
+            sem_trace = np.where(n_per_sample >= 2, sem_trace, np.nan)
+        else:
+            sem_trace = np.zeros(n_out)
     else:
         mean_trace = np.full(n_out, np.nan)
         sem_trace = np.full(n_out, np.nan)
@@ -123,27 +137,37 @@ def compute_spike_triggered_average(
 
         phot_traces = []
         eeg_traces = []
+        bl_lo = window_samples - bl_start_samples
+        bl_hi = window_samples - bl_end_samples
         for t_spike in spike_times:
             center = time_to_index(t_spike, fs)
             start = center - window_samples
             end = center + window_samples + 1
-            if start < 0 or end > len(signal):
-                continue
-            if ecog is not None and end > len(ecog):
-                continue
 
-            # Photometry: subtract pre-event baseline mean (-5s to -1s before spike)
-            phot_seg = signal[start:end].copy()
-            bl_lo = window_samples - bl_start_samples
-            bl_hi = window_samples - bl_end_samples
-            phot_seg = phot_seg - np.mean(phot_seg[bl_lo:bl_hi])
+            # NaN-pad photometry segment so edge-clipped spikes still
+            # contribute where data exists rather than being dropped.
+            phot_seg = np.full(n_out, np.nan, dtype=float)
+            sig_start = max(0, start)
+            sig_end = min(len(signal), end)
+            if sig_end > sig_start:
+                phot_seg[sig_start - start: sig_end - start] = signal[sig_start:sig_end]
+
+            # Baseline subtraction uses nanmean so a partially-clipped
+            # baseline window still produces a valid correction from the
+            # available samples.
+            bl_mean = float(np.nanmean(phot_seg[bl_lo:bl_hi]))
+            phot_seg = phot_seg - bl_mean
             phot_traces.append(phot_seg)
 
-            # EEG: polarity-align then subtract pre-event baseline mean
+            # EEG: NaN-pad, polarity-align, then nanmean baseline-subtract.
             if ecog is not None:
-                eeg_seg = ecog[start:end].copy()
+                eeg_seg = np.full(n_out, np.nan, dtype=float)
+                ecog_end = min(len(ecog), end)
+                if ecog_end > sig_start:
+                    eeg_seg[sig_start - start: ecog_end - start] = ecog[sig_start:ecog_end]
                 eeg_seg = _polarity_align_eeg(eeg_seg, window_samples, fs)
-                eeg_seg = eeg_seg - np.mean(eeg_seg[bl_lo:bl_hi])
+                eeg_bl_mean = float(np.nanmean(eeg_seg[bl_lo:bl_hi]))
+                eeg_seg = eeg_seg - eeg_bl_mean
                 eeg_traces.append(eeg_seg)
 
         n_spikes = len(phot_traces)
