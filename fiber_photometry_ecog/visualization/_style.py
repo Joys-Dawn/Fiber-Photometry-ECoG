@@ -19,7 +19,10 @@ Canonical figure sizes group plots by shape so that everything in the same
   FIG_WIDE           - single-axes "wide rectangle" for time-series and
                        signal-vs-temperature plots (cooling curves, STA
                        traces, vs-temp, UEO standalones). 2:1.
-  FIG_SCATTER        - single-axes cohort scatter (mean +/- SEM). 1.33:1.
+  FIG_SCATTER        - single-axes cohort scatter (mean +/- SEM). Vertical
+                       rectangle (tall + narrow) to mirror the slice-physiology
+                       style; per-cohort width is added on top of this base by
+                       `_save_standalone_scatter`.
   FIG_2X2            - 2x2 grid composite. 1.5:1.
 """
 
@@ -108,7 +111,7 @@ PANEL_W = 12.0
 PANEL_H = 9.0
 
 FIG_WIDE = (18.0, 10.0)
-FIG_SCATTER = (10.0, 10.0)
+FIG_SCATTER = (6.0, 12.0)
 FIG_2X2 = (22.0, 16.0)
 
 

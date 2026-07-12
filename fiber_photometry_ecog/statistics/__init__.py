@@ -21,7 +21,11 @@ from .independent import (
 )
 from .lmm_paired import compare_paired_lmm
 from .paired import PairedTestResult, compare_paired
-from .runner import run_group_comparisons, run_paired_comparisons
+from .runner import (
+    run_group_comparisons,
+    run_paired_comparisons,
+    run_within_cohort_paired_periods,
+)
 
 __all__ = [
     "StatsConfig",
@@ -34,4 +38,5 @@ __all__ = [
     "compare_paired_lmm",
     "run_group_comparisons",
     "run_paired_comparisons",
+    "run_within_cohort_paired_periods",
 ]

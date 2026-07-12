@@ -16,4 +16,5 @@ from .group_plots import (
     plot_ueo_per_cohort as plot_ueo_per_cohort,
     plot_ueo_aligned_heatmaps as plot_ueo_aligned_heatmaps,
     plot_experimental_vs_isosbestic_spike_triggered as plot_experimental_vs_isosbestic_spike_triggered,
+    write_values_means as write_values_means,
 )

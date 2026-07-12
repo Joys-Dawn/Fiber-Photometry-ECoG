@@ -22,16 +22,16 @@ from .config import PairedStatsConfig, StatsConfig
 from .extractor import extract_all, group_values
 from .independent import IndependentTestResult, compare_independent_groups
 from .lmm_paired import compare_paired_lmm
-from .paired import PairedTestResult
+from .paired import PairedTestResult, compare_paired
 
 logger = logging.getLogger(__name__)
 
 
 def _csv_name(name_prefix: str) -> str:
-    """File name for the stats CSV: ``<prefix>_stats.csv``.
+    """File name for the stats CSV: ``stats_<prefix>.csv``.
     Lets callers open multiple groups side-by-side in Excel without
     filename collisions."""
-    return f"{name_prefix}_stats.csv"
+    return f"stats_{name_prefix}.csv"
 
 
 def _row_for_result(
@@ -124,6 +124,7 @@ def run_group_comparisons(
     transients_dir: str | Path,
     name_prefix: str,
     config: Optional[StatsConfig] = None,
+    additional_rows_by_folder: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Path]:
     """Run all per-measurement comparisons across the configured cohorts.
 
@@ -200,6 +201,17 @@ def run_group_comparisons(
         )
         rows_by_folder.setdefault(folder, []).append(row)
 
+    # Additional rows (e.g. within-cohort paired-period comparisons produced
+    # by `run_within_cohort_paired_periods`). They share the CSV so both the
+    # between-cohort and within-cohort views live in the same stats file.
+    # Rows are appended verbatim — extra descriptive columns (Heating_*,
+    # Ictal_*, Cohort) are padded with NaN in the between-cohort rows by
+    # `_write_csv`'s pandas DataFrame construction.
+    if additional_rows_by_folder:
+        for folder, extras in additional_rows_by_folder.items():
+            if extras:
+                rows_by_folder.setdefault(folder, []).extend(extras)
+
     out_paths: Dict[str, Path] = {}
     folder_to_dir = {"means": Path(means_dir), "transients": Path(transients_dir)}
     csv_name = _csv_name(name_prefix)
@@ -213,6 +225,83 @@ def run_group_comparisons(
         )
 
     return out_paths
+
+
+def run_within_cohort_paired_periods(
+    cohort_results: Dict[str, Dict[str, Any]],
+    module: str,
+    period_a: str,
+    period_b: str,
+    period_a_label: str,
+    period_b_label: str,
+    cohorts: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Paired within-cohort comparison between two per-session period means.
+
+    For each cohort, aligns per-session ``period_a`` and ``period_b`` values
+    on ``(mouse_id, heating_session)`` and runs `compare_paired`, which
+    auto-picks a paired t-test vs Wilcoxon signed-rank based on the
+    normality of the differences.
+
+    Returns rows in the same schema as `_row_for_result` so they can be
+    appended to ``stats_<prefix>.csv`` via
+    `run_group_comparisons(..., additional_rows_by_folder=...)`. Each row
+    carries an additional ``Cohort`` column so the within-cohort rows are
+    distinguishable from the between-cohort ones.
+
+    Parameters
+    ----------
+    cohort_results : ``{cohort_key: {module_name: group_result}}`` — same
+        structure other stats functions consume.
+    module : the module name whose extractor exposes ``period_a`` /
+        ``period_b`` (e.g. ``"Pre-ictal mean"``).
+    period_a, period_b : measurement names as they appear in
+        `extract_all` output (e.g. ``"heating_mean"`` / ``"ictal_mean"``).
+    period_a_label, period_b_label : display labels used both in the
+        `Measurement` column and as the descriptive-column prefixes
+        (``Heating_mean`` / ``Ictal_mean`` etc.).
+    cohorts : optional iterable of cohort keys to test. None = every
+        cohort present in ``cohort_results``.
+    """
+    long_rows = extract_all(cohort_results)
+    if cohorts is None:
+        cohorts = list(cohort_results.keys())
+    cohorts = list(cohorts)
+
+    # per_cohort_values: {cohort: {"a": {subject: value}, "b": {...}}}
+    per_cohort_values: Dict[str, Dict[str, Dict[str, float]]] = {
+        c: {"a": {}, "b": {}} for c in cohorts
+    }
+    for row in long_rows:
+        if row["module"] != module:
+            continue
+        if row["cohort"] not in per_cohort_values:
+            continue
+        meas = row["measurement"]
+        if meas not in (period_a, period_b):
+            continue
+        subject = f"{row['mouse_id']}_S{row['heating_session']}"
+        slot = "a" if meas == period_a else "b"
+        per_cohort_values[row["cohort"]][slot][subject] = float(row["value"])
+
+    rows: List[Dict[str, Any]] = []
+    for cohort in cohorts:
+        vals_a = per_cohort_values[cohort]["a"]
+        vals_b = per_cohort_values[cohort]["b"]
+        if not vals_a or not vals_b:
+            continue
+        result = compare_paired(
+            measurement=f"{cohort}: {period_a_label} vs {period_b_label}",
+            group_a_name=period_a_label,
+            values_a_by_subject=vals_a,
+            group_b_name=period_b_label,
+            values_b_by_subject=vals_b,
+        )
+        row = _paired_row(result, module=module,
+                          label_a=period_a_label, label_b=period_b_label)
+        row["Cohort"] = cohort
+        rows.append(row)
+    return rows
 
 
 def _paired_row(

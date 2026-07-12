@@ -69,6 +69,7 @@ from .visualization import (
     plot_postictal,
     plot_spike_triggered,
     plot_ueo_per_cohort,
+    write_values_means,
     plot_ueo_aligned_heatmaps,
     plot_experimental_vs_isosbestic_spike_triggered,
 )
@@ -1342,6 +1343,14 @@ class FiberPhotometryApp:
                 ("Postictal", compute_postictal, plot_postictal, means_dir),
                 ("Spike-triggered averages", None, plot_spike_triggered, means_dir),
             ]
+            # Experiment folder name is the same prefix used by the stats CSV;
+            # appended to every per-cohort artifact filename so multiple groups
+            # can sit in one shared folder without overwriting each other.
+            name_prefix = Path(self.experiment_path_var.get().strip()).name
+            _ANALYSIS_MODULES_WITH_PREFIX = {
+                "Cohort characteristics", "Pre-ictal mean", "Ictal mean",
+                "Postictal", "Spike-triggered averages",
+            }
 
             failed_modules = []
             # Capture cross-module data for follow-up plots (Phase 2f, 4e) and
@@ -1381,7 +1390,13 @@ class FiberPhotometryApp:
 
                     # Plot - filtered to the selected cohort subset so every
                     # multi-cohort panel honors the comparison selection.
-                    fig_path = plot_fn(_filter_for_plot(results), dest_dir)
+                    if name in _ANALYSIS_MODULES_WITH_PREFIX:
+                        fig_path = plot_fn(
+                            _filter_for_plot(results), dest_dir,
+                            name_prefix=name_prefix,
+                        )
+                    else:
+                        fig_path = plot_fn(_filter_for_plot(results), dest_dir)
                     self._log_extract(f"  {name}: saved {fig_path}")
                     if name == "Ictal mean":
                         ictal_results_by_cohort = results
@@ -1390,6 +1405,18 @@ class FiberPhotometryApp:
                     failed_modules.append(name)
                     self._log_extract(f"  {name}: ERROR - {e}")
                     logger.exception("Error in %s", name)
+
+            # Consolidated per-session means CSV: merges Pre-ictal / Ictal /
+            # Postictal session data into one values_means_<prefix>.csv.
+            try:
+                vm_path = write_values_means(
+                    cohort_module_results, means_dir, name_prefix=name_prefix,
+                )
+                if vm_path:
+                    self._log_extract(f"  values_means CSV: {vm_path}")
+            except Exception as e:
+                self._log_extract(f"  values_means CSV: ERROR - {e}")
+                logger.exception("Error writing values_means CSV")
 
             # --- 9b. Follow-up multi-source plots ---
             # Wide-window UEO-triggered mean per cohort (summary_UEO_aligned_traces

@@ -23,6 +23,11 @@ COHORT_COLORS = {
     "FCD_sz": "red",        # FCD seizure: red to match the canonical
                             # "seized" color used for DS_sz.
     "FCD_no_sz": "blue",
+    # PTZ pooled cohort (DS + WT combined) — the canonical view for PTZ
+    # since the chemoconvulsant evokes seizures uniformly across genotypes.
+    # Plotted in red because the only relevant sessions for this view are
+    # seized ones (PTZ universally induces seizures).
+    "PTZ_pooled": "red",
     # Opto cohorts render in black per spec — each panel shows a single
     # cohort so there's no overlap to distinguish. Affects both per-session
     # trace plots and the stim-aligned per-cohort mean plots.
@@ -30,6 +35,9 @@ COHORT_COLORS = {
     "10HZ_DG_CPP": "black",
     "1HZ_DG": "black",
     "20HZ_DG": "black",
+    "20HZ_DG_Atomoxetine": "black",
+    "20HZ_DG_mcherry": "black",
+    "20HZ_LC": "black",
 }
 
 # Fallback palette for unknown cohort keys (any subfolder name we haven't
@@ -74,6 +82,7 @@ COHORT_DISPLAY_LABELS = {
     "WT_no_sz": "WT",
     "FCD_sz": "FCD sz",
     "FCD_no_sz": "FCD no sz",
+    "PTZ_pooled": "PTZ pooled",
     # Opto cohorts: spaces in for readability, "10 Hz DG + CPP" line-broken
     # so it fits FIG_SCATTER at 40pt tick size.
     "10HZ_DG": "10 Hz DG",

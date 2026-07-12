@@ -128,19 +128,23 @@ def plot_sanity_check(
         transients = session.transients
 
     fig, axes = plt.subplots(6, 1, figsize=(24, 26), sharex=True)
+    # Six stacked panels share the global 48pt label size, which makes the
+    # ylabels collide with each other under constrained_layout. These are
+    # diagnostic plots (not for publication), so shrink them locally.
+    _YLABEL_SIZE = 28
 
     # 1. Raw 470 & 405
     ax = axes[0]
     ax.plot(time_s, raw.signal_470, color="blue", linewidth=0.3, label="470nm")
     ax.plot(time_s, raw.signal_405, color="violet", linewidth=0.3, label="405nm")
-    ax.set_ylabel("Raw (V)")
+    ax.set_ylabel("Raw (V)", fontsize=_YLABEL_SIZE)
     ax.legend(loc="upper right")
 
     # 2. Corrected z-ΔF/F
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color=color, linewidth=0.3)
     ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_ylabel(DFF_LABEL)
+    ax.set_ylabel(DFF_LABEL, fontsize=_YLABEL_SIZE)
 
     # 3. HPF/detection stream + transients
     _used_hpf = getattr(session.preprocessing_config, 'photometry', None) and session.preprocessing_config.photometry.apply_hpf
@@ -156,17 +160,17 @@ def plot_sanity_check(
             proc.photometry.dff_hpf[peak_idxs],
             "v", color="black", markersize=3,
         )
-    ax.set_ylabel(_det_label)
+    ax.set_ylabel(_det_label, fontsize=_YLABEL_SIZE)
 
     # 4. Raw ECoG
     ax = axes[3]
     ax.plot(time_s, raw.ecog, color=ECOG_COLOR, linewidth=0.3)
-    ax.set_ylabel("Raw ECoG (µV)")
+    ax.set_ylabel("Raw ECoG (µV)", fontsize=_YLABEL_SIZE)
 
     # 5. Filtered ECoG
     ax = axes[4]
     ax.plot(time_s, proc.ecog_filtered, color=ECOG_COLOR, linewidth=0.3)
-    ax.set_ylabel("Filt ECoG (µV)")
+    ax.set_ylabel("Filt ECoG (µV)", fontsize=_YLABEL_SIZE)
 
     # 6. Temperature
     ax = axes[5]
@@ -176,7 +180,7 @@ def plot_sanity_check(
         ax.axhline(bl_temp, color="black", linestyle="--", linewidth=0.6, alpha=0.5,
                    label=f"baseline={bl_temp:.2f}°C")
         ax.legend(loc="lower right")
-    ax.set_ylabel("Temp (°C)")
+    ax.set_ylabel("Temp (°C)", fontsize=_YLABEL_SIZE)
     ax.set_xlabel("Time (s)")
 
     _draw_landmark_lines(axes, session.landmarks, offset=0.0)
@@ -360,20 +364,24 @@ def plot_sanity_check_opto(
         transients = session.transients
 
     fig, axes = plt.subplots(4, 1, figsize=(24, 18), sharex=True)
+    # Four stacked panels share the global 48pt label size, which makes the
+    # ylabels collide with each other under constrained_layout. These are
+    # diagnostic plots (not for publication), so shrink them locally.
+    _YLABEL_SIZE = 28
 
     # 1. Raw 470 (solid) + 405 (dashed) — both black, distinguished by style.
     ax = axes[0]
     ax.plot(time_s, raw.signal_470, color="black", linewidth=0.3, label="470nm")
     ax.plot(time_s, raw.signal_405, color="black", linewidth=0.3,
             linestyle="--", label="405nm")
-    ax.set_ylabel("Raw (V)")
+    ax.set_ylabel("Raw (V)", fontsize=_YLABEL_SIZE)
     ax.legend(loc="upper right")
 
     # 2. Corrected z-ΔF/F.
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color="black", linewidth=0.3)
     ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_ylabel(DFF_LABEL)
+    ax.set_ylabel(DFF_LABEL, fontsize=_YLABEL_SIZE)
 
     # 3. HPF stream + detected transients.
     _used_hpf = (
@@ -392,19 +400,19 @@ def plot_sanity_check_opto(
             proc.photometry.dff_hpf[peak_idxs],
             "v", color="black", markersize=3,
         )
-    ax.set_ylabel(_det_label)
+    ax.set_ylabel(_det_label, fontsize=_YLABEL_SIZE)
 
     # 4. Opto stim raw trace (no axis crash if it's None — render an empty
     # panel and label it as missing so the layout stays consistent).
     ax = axes[3]
     if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
         ax.plot(time_s, raw.stim_raw, color="black", linewidth=0.5)
-        ax.set_ylabel("Opto stim (V)")
+        ax.set_ylabel("Opto stim (V)", fontsize=_YLABEL_SIZE)
     else:
         ax.text(0.5, 0.5, "no opto stim channel",
                 ha="center", va="center", transform=ax.transAxes,
                 color="gray")
-        ax.set_ylabel("Opto stim")
+        ax.set_ylabel("Opto stim", fontsize=_YLABEL_SIZE)
     ax.set_xlabel("Time (s)")
 
     _draw_landmark_lines_opto(axes, session.landmarks, offset=0.0)
