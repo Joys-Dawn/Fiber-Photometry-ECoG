@@ -10,6 +10,7 @@ import pytest
 
 from fiber_photometry_ecog.statistics import r_bridge
 from fiber_photometry_ecog.statistics.lmm_paired import compare_paired_lmm
+from fiber_photometry_ecog.statistics.runner import _write_csv
 
 
 GROUP_A = "Pre"
@@ -129,6 +130,38 @@ def test_too_few_pairs_returns_none_test():
     )
     assert result.test_name == "None"
     assert result.n_pairs == 1
+
+
+def test_all_untestable_rows_write_parseable_header_only_csv(tmp_path):
+    path = _write_csv(
+        [
+            {
+                "Module": "Baseline transients",
+                "Folder": "transients",
+                "Measurement": "frequency_hz",
+                "Test": "None",
+                "Statistic": np.nan,
+                "p_value": np.nan,
+                "Pre_mean": 0.0,
+                "Pre_sem": 0.0,
+                "Pre_n": 8,
+                "Post_mean": 0.0,
+                "Post_sem": 0.0,
+                "Post_n": 8,
+                "n_pairs": 8,
+            },
+        ],
+        tmp_path / "paired_stats.csv",
+    )
+
+    written = pd.read_csv(path)
+    assert written.empty
+    assert "Folder" not in written.columns
+    assert {
+        "Module", "Measurement", "Test", "Statistic", "p_value",
+        "Pre_mean", "Pre_sem", "Pre_n",
+        "Post_mean", "Post_sem", "Post_n", "n_pairs",
+    } == set(written.columns)
 
 
 def test_separate_repeats_become_separate_pairs():

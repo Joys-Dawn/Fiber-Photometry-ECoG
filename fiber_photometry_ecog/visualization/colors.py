@@ -23,6 +23,14 @@ COHORT_COLORS = {
     "FCD_sz": "red",        # FCD seizure: red to match the canonical
                             # "seized" color used for DS_sz.
     "FCD_no_sz": "blue",
+    # Dataset-specific pooled hyperthermia group keys. Individual points in
+    # "No seizure" are overridden by source genotype in run_hyperthermia.py;
+    # this fallback is used only if source metadata is unavailable.
+    "Seizure": "red",
+    "No seizure": "#555555",
+    # LC baseline-transient genotype-only groups.
+    "DS": "red",
+    "WT": "blue",
     # PTZ pooled cohort (DS + WT combined) — the canonical view for PTZ
     # since the chemoconvulsant evokes seizures uniformly across genotypes.
     # Plotted in red because the only relevant sessions for this view are
@@ -82,6 +90,10 @@ COHORT_DISPLAY_LABELS = {
     "WT_no_sz": "WT",
     "FCD_sz": "FCD sz",
     "FCD_no_sz": "FCD no sz",
+    "Seizure": "Seizure",
+    "No seizure": "No seizure",
+    "DS": "DS",
+    "WT": "WT",
     "PTZ_pooled": "PTZ pooled",
     # Opto cohorts: spaces in for readability, "10 Hz DG + CPP" line-broken
     # so it fits FIG_SCATTER at 40pt tick size.

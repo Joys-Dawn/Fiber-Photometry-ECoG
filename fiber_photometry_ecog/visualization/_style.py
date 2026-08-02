@@ -44,6 +44,13 @@ AXIS_LINEWIDTH = 3.0
 # out, not blend into a grid.
 EVENT_LINEWIDTH = 3.5
 
+# Zero-reference lines are deliberately darker and slightly thinner than
+# event lines. They should be easy to find without competing with the
+# experimental landmark at x=0.
+ZERO_LINE_COLOR = "#202020"
+ZERO_LINEWIDTH = 2.5
+ZERO_LINESTYLE = "--"
+
 # Distance (points) between top of axes and the title. matplotlib default
 # is 6, which sits the title right on top of the plot. Bumped to 30 so
 # the title clears tick labels and stays readable when constrained_layout
@@ -105,6 +112,43 @@ def styled(fn):
     return wrapper
 
 
+def add_zero_y(ax, ensure_visible: bool = False) -> None:
+    """Draw a dark dashed y=0 reference line.
+
+    When ensure_visible is true, expand an all-positive or all-negative
+    y-range just past zero. The small margin keeps the reference line inside
+    the plotting area instead of hiding it under the bottom/top axis spine.
+    """
+    if ensure_visible:
+        lo, hi = ax.get_ylim()
+        if lo > 0:
+            span = max(hi - lo, abs(hi), 1.0)
+            ax.set_ylim(-0.04 * span, hi)
+        elif hi < 0:
+            span = max(hi - lo, abs(lo), 1.0)
+            ax.set_ylim(lo, 0.04 * span)
+    ax.axhline(
+        0,
+        color=ZERO_LINE_COLOR,
+        linestyle=ZERO_LINESTYLE,
+        linewidth=ZERO_LINEWIDTH,
+        alpha=0.9,
+        zorder=1,
+    )
+
+
+def add_zero_x(ax) -> None:
+    """Draw a dark dashed x=0 reference line."""
+    ax.axvline(
+        0,
+        color=ZERO_LINE_COLOR,
+        linestyle=ZERO_LINESTYLE,
+        linewidth=EVENT_LINEWIDTH,
+        alpha=0.9,
+        zorder=4,
+    )
+
+
 # ---- Canonical figure sizes (aspect-ratio groups) ----
 
 PANEL_W = 12.0
@@ -112,7 +156,10 @@ PANEL_H = 9.0
 
 FIG_WIDE = (18.0, 10.0)
 FIG_SCATTER = (6.0, 12.0)
-FIG_2X2 = (22.0, 16.0)
+# Four panels need enough per-axis width for the publication-scale labels.
+# At 22 x 16, the repeated time-axis labels could run into the neighboring
+# panel or the saved-image edge even under constrained layout.
+FIG_2X2 = (30.0, 20.0)
 
 
 def panel_figsize(n: int) -> tuple:

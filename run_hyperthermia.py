@@ -38,6 +38,8 @@ from fiber_photometry_ecog.preprocessing.transient_detection import detect_trans
 from fiber_photometry_ecog.preprocessing.photometry import strategy_folder_name
 from fiber_photometry_ecog.core.output_layout import ensure_layout
 from fiber_photometry_ecog.core.cohort import classify_session, COHORT_KEYS
+from fiber_photometry_ecog.statistics import StatsConfig
+from fiber_photometry_ecog.visualization.colors import cohort_color
 from fiber_photometry_ecog.visualization.trace_plots import (
     plot_sanity_check,
     plot_zoomed,
@@ -88,6 +90,54 @@ HEATMAP_VLIM_PAIRS = {
 # Pooled cohort key used when `pooled=True` for a subfolder. Every session
 # is dropped into this one bucket instead of being split by genotype.
 PTZ_POOLED_KEY = "PTZ_pooled"
+
+# DG and LC publication scalar views compare seizure outcome, with both
+# no-seizure genotypes pooled. Qualitative traces stay in the canonical
+# genotype-by-outcome groups via `trace_cohort_classifier` below.
+SEIZURE_OUTCOME_SUBFOLDERS = {"DG_GRABne", "LC_GCaMP"}
+
+# These two publication datasets use duration-qualified ictal extrema. The
+# reported maximum must be sustained at-or-above for 200 ms; the minimum must
+# be sustained at-or-below for 200 ms. Other hyperthermia datasets and the GUI
+# retain their existing sample-wise extrema.
+ICTAL_EXTREMA_MIN_DURATION_S = {
+    "DG_GRABne": 0.200,
+    "LC_GCaMP": 0.200,
+}
+
+
+def _seizure_outcome_classifier(session) -> str:
+    return "Seizure" if session.n_seizures > 0 else "No seizure"
+
+
+def _genotype_classifier(session) -> str:
+    genotype = (session.genotype or "").strip().lower()
+    return "DS" if genotype.startswith("scn1a") else "WT"
+
+
+def _source_point_colors(sessions) -> dict:
+    """Color pooled points by their original biological source group."""
+    colors = {}
+    for session in sessions:
+        key = (session.mouse_id, session.heating_session)
+        source = classify_session(session)
+        plotted_group = _seizure_outcome_classifier(session)
+        colors[(plotted_group, key)] = (
+            "red" if session.n_seizures > 0 else cohort_color(source)
+        )
+    return colors
+
+
+def _genotype_point_colors(sessions) -> dict:
+    return {
+        (
+            _genotype_classifier(session),
+            (session.mouse_id, session.heating_session),
+        ): (
+            "red" if _genotype_classifier(session) == "DS" else "blue"
+        )
+        for session in sessions
+    }
 
 # Per-subfolder within-cohort paired-period stats. Each entry is fed to
 # `run_group_analysis(within_cohort_paired_periods=...)` and appended to
@@ -206,11 +256,44 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
         plot_sanity_check(session, qc_dir, session.transients)
         plot_zoomed(session, qc_dir)
 
-    # Pooled runs collapse the genotype × seized split into a single bucket
+    # Pooled PTZ runs collapse the genotype × seized split into a single bucket
     # so the resulting cohort means/SEM reflect PTZ-as-one-group, which is
     # the canonical view we report in the main figure. The split-cohort run
     # is still produced as a separate subfolder for supplemental support.
     cohort_classifier = (lambda _s: PTZ_POOLED_KEY) if pooled else None
+    trace_cohort_classifier = None
+    module_cohort_classifiers = None
+    scatter_options = None
+    module_scatter_options = None
+    stats_config = None
+    module_stats_configs = None
+
+    if subfolder in SEIZURE_OUTCOME_SUBFOLDERS:
+        cohort_classifier = _seizure_outcome_classifier
+        trace_cohort_classifier = classify_session
+        scatter_options = {
+            "point_colors_by_id": _source_point_colors(sessions),
+        }
+        stats_config = StatsConfig(
+            cohorts_to_compare=["Seizure", "No seizure"],
+        )
+
+        if subfolder == "LC_GCaMP":
+            # Baseline transients introduce genotype before seizure outcome:
+            # DS combines seizure/no-seizure sessions in red; WT is blue.
+            module_cohort_classifiers = {
+                "Baseline transients": _genotype_classifier,
+            }
+            module_scatter_options = {
+                "Baseline transients": {
+                    "point_colors_by_id": _genotype_point_colors(sessions),
+                },
+            }
+            module_stats_configs = {
+                "Baseline transients": StatsConfig(
+                    cohorts_to_compare=["DS", "WT"],
+                ),
+            }
 
     # CSV / stats filename prefix. For default folders the prefix is just
     # the subfolder name (preserves legacy ``stats_DG_GRABne.csv`` etc.).
@@ -225,6 +308,12 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
     # results tree so the existing results_dg/ / results_lc/ are untouched.
     log.info("  Running group analysis -> %s   run_stats=%s",
              results_base, run_stats)
+    extrema_min_duration_s = ICTAL_EXTREMA_MIN_DURATION_S.get(subfolder)
+    if extrema_min_duration_s is not None:
+        log.info(
+            "  Ictal extrema require %.0f ms at/above or at/below the value",
+            extrema_min_duration_s * 1000,
+        )
     run_group_analysis(sessions, STRATEGY, ds_key, results_base,
                         stats_name_prefix=prefix,
                         ueo_y_lim=ueo_y_lim, run_stats=run_stats,
@@ -232,7 +321,14 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
                         ueo_heatmap_vlim_override=ueo_heatmap_vlim_override,
                         ueo_heatmap_diagnostics=ueo_heatmap_diagnostics,
                         cohort_classifier=cohort_classifier,
-                        within_cohort_paired_periods=within_cohort_paired_periods)
+                        trace_cohort_classifier=trace_cohort_classifier,
+                        module_cohort_classifiers=module_cohort_classifiers,
+                        scatter_options=scatter_options,
+                        module_scatter_options=module_scatter_options,
+                        stats_config=stats_config,
+                        module_stats_configs=module_stats_configs,
+                        within_cohort_paired_periods=within_cohort_paired_periods,
+                        ictal_extrema_min_duration_s=extrema_min_duration_s)
 
 
 def main() -> None:

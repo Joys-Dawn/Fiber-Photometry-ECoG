@@ -1262,7 +1262,6 @@ class FiberPhotometryApp:
             means_dir = str(layout["means"])
             transients_dir = str(layout["transients"])
             param_dir = str(layout["parameter_detection"])
-            qc_dir = str(layout["quality_check"])
 
             steps = 12  # pairing + 8 modules + wide-UEO + diagnostic + done
             step = 0
@@ -1354,10 +1353,9 @@ class FiberPhotometryApp:
 
             failed_modules = []
             # Capture cross-module data for follow-up plots (Phase 2f, 4e) and
-            # the cohort-level stats step. cohort_module_results is the same
-            # information indexed by cohort first so the stats runner can pull
-            # per-session scalars across every analysis module in one pass.
-            ictal_results_by_cohort = {}
+            # the cohort-level stats step. cohort_module_results is indexed by
+            # cohort first so the stats runner can pull per-session scalars
+            # across every analysis module in one pass.
             spike_times_by_cohort: Dict[str, List[np.ndarray]] = {}
             cohort_module_results: Dict[str, Dict[str, object]] = {
                 c: {} for c in cohort_groups
@@ -1398,8 +1396,6 @@ class FiberPhotometryApp:
                     else:
                         fig_path = plot_fn(_filter_for_plot(results), dest_dir)
                     self._log_extract(f"  {name}: saved {fig_path}")
-                    if name == "Ictal mean":
-                        ictal_results_by_cohort = results
 
                 except Exception as e:
                     failed_modules.append(name)

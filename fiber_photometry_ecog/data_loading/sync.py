@@ -13,19 +13,18 @@ Improvement over single-edge alignment: uses ALL matched pulses to fit a
 linear model, which corrects for clock drift (not just a fixed offset).
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
-
-import logging
 
 import numpy as np
 from scipy.interpolate import PchipInterpolator
 from scipy.signal import decimate
 
-logger = logging.getLogger(__name__)
-
-from .ppd_reader import PPDData
 from .oep_reader import OEPData
+from .ppd_reader import PPDData
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

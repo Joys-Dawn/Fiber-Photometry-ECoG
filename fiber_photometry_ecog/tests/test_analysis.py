@@ -8,6 +8,8 @@ each analyzer produces correct metrics.
 import numpy as np
 import pytest
 
+import fiber_photometry_ecog.analysis.ictal_mean as ictal_mean_module
+
 from fiber_photometry_ecog.core.config import AnalysisConfig
 from fiber_photometry_ecog.core.data_models import (
     Session,
@@ -20,7 +22,10 @@ from fiber_photometry_ecog.analysis.cohort_characteristics import compute_cohort
 from fiber_photometry_ecog.analysis.baseline_transients import compute_baseline_transients
 from fiber_photometry_ecog.analysis.preictal_mean import compute_preictal_mean
 from fiber_photometry_ecog.analysis.preictal_transients import compute_preictal_transients
-from fiber_photometry_ecog.analysis.ictal_mean import compute_ictal_mean
+from fiber_photometry_ecog.analysis.ictal_mean import (
+    compute_ictal_mean,
+    compute_sustained_extrema,
+)
 from fiber_photometry_ecog.analysis.ictal_transients import compute_ictal_transients
 from fiber_photometry_ecog.analysis.postictal import compute_postictal
 from fiber_photometry_ecog.analysis.spike_triggered import compute_spike_triggered_average
@@ -262,6 +267,81 @@ class TestPreictalTransients:
 # ---------------------------------------------------------------------------
 
 class TestIctalMean:
+    def test_default_extrema_path_does_not_call_sustained_helper(
+        self, monkeypatch,
+    ):
+        session = _make_session(
+            fs=1000.0,
+            duration_s=320.0,
+            heating_start=60.0,
+            ueo_time=180.0,
+            off_time=200.0,
+        )
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("Default extrema must remain sample-wise")
+
+        monkeypatch.setattr(
+            ictal_mean_module,
+            "compute_sustained_extrema",
+            fail_if_called,
+        )
+        result = compute_ictal_mean([session], auc_end_s=20.0)
+
+        assert len(result.session_results) == 1
+
+    def test_sustained_extrema_reject_brief_spikes_without_smoothing(self):
+        signal = np.zeros(1_200, dtype=float)
+        signal[100] = 10.0
+        signal[250:450] = 4.0
+        signal[600] = -9.0
+        signal[800:1_000] = -3.0
+
+        sample_extrema = compute_sustained_extrema(signal, fs=1000.0)
+        sustained = compute_sustained_extrema(
+            signal,
+            fs=1000.0,
+            min_duration_s=0.200,
+        )
+
+        assert sample_extrema.maximum == pytest.approx(10.0)
+        assert sample_extrema.minimum == pytest.approx(-9.0)
+        assert sustained.maximum == pytest.approx(4.0)
+        assert sustained.minimum == pytest.approx(-3.0)
+        assert sustained.maximum_window_start == 250
+        assert sustained.minimum_window_start == 800
+        assert sustained.duration_samples == 200
+
+    def test_ictal_deltas_use_duration_qualified_extrema_when_enabled(self):
+        s = _make_session(
+            fs=1000.0,
+            duration_s=320.0,
+            heating_start=60.0,
+            ueo_time=180.0,
+            off_time=200.0,
+        )
+        signal = s.processed.photometry.dff_zscore
+        signal[170_000:180_000] = 2.0
+        signal[180_100] = 12.0
+        signal[181_000:181_200] = 6.0
+        signal[182_000] = -8.0
+        signal[183_000:183_200] = -4.0
+
+        sample_result = compute_ictal_mean([s], auc_end_s=20.0)
+        sustained_result = compute_ictal_mean(
+            [s],
+            auc_end_s=20.0,
+            extrema_min_duration_s=0.200,
+        )
+
+        sample = sample_result.session_results[0]
+        sustained = sustained_result.session_results[0]
+        assert sample.delta_preictal_ictal_max == pytest.approx(10.0)
+        assert sample.delta_preictal_ictal_min == pytest.approx(-10.0)
+        assert sustained.delta_preictal_ictal_max == pytest.approx(4.0)
+        assert sustained.delta_preictal_ictal_min == pytest.approx(-6.0)
+        assert sustained.delta_preictal_ictal == pytest.approx(-6.0)
+
     def test_seizure_vs_baseline_mean(self):
         s = _make_session(
             heating_start=60.0,

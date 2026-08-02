@@ -57,6 +57,7 @@ from fiber_photometry_ecog.statistics import run_paired_comparisons
 from fiber_photometry_ecog.statistics.extractor import extract_all
 from fiber_photometry_ecog.statistics.ratio import gmr_paired_test, pair_arrays
 from fiber_photometry_ecog.visualization import _style
+from fiber_photometry_ecog.visualization.colors import COHORT_DISPLAY_LABELS
 from fiber_photometry_ecog.visualization.trace_plots import (
     plot_sanity_check_opto,
     plot_zoomed_opto,
@@ -621,9 +622,16 @@ def _make_normalized_response_bar(
     ax.scatter(jitter, vals, color="black", s=180, zorder=3,
                edgecolor="black", linewidths=0.8, alpha=0.9)
 
-    ax.axhline(1.0, color="black", lw=1.5, ls=":", alpha=0.6, zorder=2)
+    ax.axhline(
+        1.0,
+        color=_style.ZERO_LINE_COLOR,
+        lw=_style.ZERO_LINEWIDTH,
+        ls=_style.ZERO_LINESTYLE,
+        alpha=0.9,
+        zorder=2,
+    )
     ax.set_xticks([0])
-    ax.set_xticklabels([f"{group_b}\n(n={len(vals)} pairs)"])
+    ax.set_xticklabels([COHORT_DISPLAY_LABELS.get(group_b, group_b)])
     ax.set_ylabel("Normalized response\n(post / paired baseline)")
     ax.set_xlim(-0.6, 0.6)
     ax.spines[["right", "top"]].set_visible(False)
@@ -762,10 +770,20 @@ def run_one_root(experiment_subpath: str, ds_key: str,
         plot_zoomed_opto(session, qc_dir)
 
     log.info("  Running group analysis -> %s", results_base)
+    is_cpp_treatment = ds_key == "opto_cpp_treatment"
+    paired_scatter = {"connect_pairs": True}
+    cpp_scatter_modules = {
+        name: paired_scatter
+        for name in (
+            "Cohort characteristics", "Pre-ictal mean", "Ictal mean",
+            "Postictal", "Spike-triggered averages", "Opto response",
+        )
+    } if is_cpp_treatment else None
     cohort_module_results = run_group_analysis(
         sessions, STRATEGY, ds_key, results_base,
         stats_name_prefix=label,
-        ueo_y_lim=None, run_stats=False,
+        ueo_y_lim=(-0.1, 0.3) if is_cpp_treatment else None,
+        run_stats=False,
         # Opto stim-aligned trace plot: ±100 s window centered on stim
         # onset (which is what the UEO landmark holds for opto sessions).
         ueo_standard_window_s=(-100.0, 100.0),
@@ -778,8 +796,10 @@ def run_one_root(experiment_subpath: str, ds_key: str,
         is_opto=True,
         ueo_filename_prefix="stim_onset_aligned",
         ueo_dff_label=dff_label,
+        module_scatter_options=cpp_scatter_modules,
         ueo_yscale_exclude=list(excluded_from_scale),
         ueo_heatmap_exclude_from_vlim=list(excluded_from_scale),
+        ueo_heatmap_vlim_override=0.4 if is_cpp_treatment else None,
         # Opto UEO (stim-onset) triggered AUC integrates over 40 s post-stim,
         # not the default global_mean_duration (= stim_off − stim_on = 10 s).
         # The 10 s default would only capture the during-stim window; the

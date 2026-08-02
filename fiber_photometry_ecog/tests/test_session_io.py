@@ -1,7 +1,6 @@
 """Round-trip tests for session save/load."""
 
 import numpy as np
-import pytest
 
 from fiber_photometry_ecog.core.config import PreprocessingConfig, PhotometryConfig
 from fiber_photometry_ecog.core.data_models import (

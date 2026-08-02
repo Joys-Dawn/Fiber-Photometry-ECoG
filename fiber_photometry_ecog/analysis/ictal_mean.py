@@ -90,6 +90,104 @@ class IctalMeanGroupResult:
     delta_min_sem: float = np.nan
 
 
+@dataclass(frozen=True)
+class SustainedExtrema:
+    """Duration-qualified maximum and minimum within one signal window.
+
+    ``maximum`` is the highest threshold for which the signal remains at or
+    above that threshold for ``duration_samples`` consecutive samples.
+    ``minimum`` is the lowest threshold for which the signal remains at or
+    below that threshold for the same duration. Window indices are half-open;
+    point indices identify the sample that limits each selected threshold.
+    """
+
+    maximum: float
+    minimum: float
+    maximum_index: int
+    minimum_index: int
+    maximum_window_start: int
+    minimum_window_start: int
+    duration_samples: int
+
+
+def compute_sustained_extrema(
+    signal: np.ndarray,
+    fs: float,
+    min_duration_s: float | None = None,
+) -> SustainedExtrema:
+    """Return sample-wise or duration-qualified extrema without smoothing.
+
+    A duration-qualified maximum is the maximum of every sliding window's
+    minimum (maximin). The corresponding minimum is the minimum of every
+    sliding window's maximum (minimax). This directly implements the rule
+    that the signal must remain above/below the reported value for the full
+    requested duration.
+    """
+    values = np.asarray(signal, dtype=float)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("Extrema require a non-empty one-dimensional signal.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Extrema require finite signal values.")
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError(f"Extrema require a positive sampling rate; got {fs}.")
+
+    if min_duration_s is None:
+        duration_samples = 1
+    else:
+        if not np.isfinite(min_duration_s) or min_duration_s <= 0:
+            raise ValueError(
+                "Extrema minimum duration must be positive; "
+                f"got {min_duration_s}."
+            )
+        duration_samples = max(1, int(round(min_duration_s * fs)))
+
+    if duration_samples > values.size:
+        raise ValueError(
+            f"Extrema window has {values.size} samples, fewer than the "
+            f"required {duration_samples} samples."
+        )
+
+    if duration_samples == 1:
+        maximum_index = int(np.argmax(values))
+        minimum_index = int(np.argmin(values))
+        return SustainedExtrema(
+            maximum=float(values[maximum_index]),
+            minimum=float(values[minimum_index]),
+            maximum_index=maximum_index,
+            minimum_index=minimum_index,
+            maximum_window_start=maximum_index,
+            minimum_window_start=minimum_index,
+            duration_samples=1,
+        )
+
+    windows = np.lib.stride_tricks.sliding_window_view(
+        values, duration_samples,
+    )
+    window_minima = np.min(windows, axis=1)
+    window_maxima = np.max(windows, axis=1)
+    maximum_window_start = int(np.argmax(window_minima))
+    minimum_window_start = int(np.argmin(window_maxima))
+
+    maximum_window = values[
+        maximum_window_start:maximum_window_start + duration_samples
+    ]
+    minimum_window = values[
+        minimum_window_start:minimum_window_start + duration_samples
+    ]
+    maximum_index = maximum_window_start + int(np.argmin(maximum_window))
+    minimum_index = minimum_window_start + int(np.argmax(minimum_window))
+
+    return SustainedExtrema(
+        maximum=float(window_minima[maximum_window_start]),
+        minimum=float(window_maxima[minimum_window_start]),
+        maximum_index=maximum_index,
+        minimum_index=minimum_index,
+        maximum_window_start=maximum_window_start,
+        minimum_window_start=minimum_window_start,
+        duration_samples=duration_samples,
+    )
+
+
 def _extract_triggered_trace(
     signal: np.ndarray,
     fs: float,
@@ -312,6 +410,7 @@ def compute_ictal_mean(
     auc_end_s: float,
     config: AnalysisConfig | None = None,
     auc_end_s_per_landmark: Optional[Dict[str, float]] = None,
+    extrema_min_duration_s: float | None = None,
 ) -> IctalMeanGroupResult:
     """Compute ictal mean signal metrics for a group of sessions.
 
@@ -326,6 +425,10 @@ def compute_ictal_mean(
         to an integration window in seconds, overriding the global default for
         that landmark. Also extends the post-event trace window so the full
         AUC interval is visible. Per spec, OFF defaults to 100 s.
+    extrema_min_duration_s : optional duration requirement for ictal extrema.
+        When omitted, max/min remain sample-wise. When provided, max is the
+        highest value sustained at-or-above for this duration and min is the
+        lowest value sustained at-or-below for this duration.
     """
     if config is None:
         config = AnalysisConfig()
@@ -368,8 +471,17 @@ def compute_ictal_mean(
         # Per spec: report both ictal max and ictal min separately so the
         # experimenter can choose either direction. Also keep the legacy
         # |peak|-based delta for backward compatibility.
-        ictal_max = float(np.max(ictal_window))
-        ictal_min = float(np.min(ictal_window))
+        if extrema_min_duration_s is None:
+            ictal_max = float(np.max(ictal_window))
+            ictal_min = float(np.min(ictal_window))
+        else:
+            extrema = compute_sustained_extrema(
+                ictal_window,
+                fs,
+                extrema_min_duration_s,
+            )
+            ictal_max = extrema.maximum
+            ictal_min = extrema.minimum
         delta_max = ictal_max - late_heat_mean
         delta_min = ictal_min - late_heat_mean
         if abs(delta_max) >= abs(delta_min):

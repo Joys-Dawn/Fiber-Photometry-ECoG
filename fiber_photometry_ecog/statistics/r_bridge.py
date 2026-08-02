@@ -274,6 +274,17 @@ def _run_r_script(script: str, timeout: int = 60) -> Optional[str]:
             capture_output=True, text=True, timeout=timeout,
         )
         if result.returncode != 0:
+            # Some native Windows R builds can crash during process teardown
+            # after the script has already completed successfully. Accept the
+            # structured output only when the script's final marker was
+            # emitted; otherwise a nonzero exit remains a hard failure.
+            if "STATUS: COMPLETE" in result.stdout:
+                logger.warning(
+                    "Rscript exited with code %s after emitting complete "
+                    "LMM output; accepting the completed result.",
+                    result.returncode,
+                )
+                return result.stdout
             stderr = "\n".join(
                 line for line in result.stderr.splitlines()
                 if not any(x in line for x in
@@ -424,6 +435,7 @@ for (col in names(df)) {{
             pw$contrast[i], pw$estimate[i], pw$SE[i],
             pw$df[i], pw$t.ratio[i], pw$p.value[i]))
     }}
+    cat("STATUS: COMPLETE\\n")
 }}
 '''
 

@@ -17,9 +17,75 @@ from . import _style  # provides the @styled decorator used on PNG writers
 from ..core.cohort import classify_session
 from ..core.data_models import Session, TransientEvent
 from .colors import (
-    ECOG_COLOR, TEMP_COLOR, COHORT_COLORS, cohort_color,
+    ECOG_COLOR, TEMP_COLOR, cohort_color,
     LANDMARK_COLORS, LANDMARK_DISPLAY_LABELS, DFF_LABEL,
 )
+
+_LANDMARK_LABEL_MIN_SEPARATION = 0.045
+_LANDMARK_LABEL_LEVEL_STEP_PT = 40
+_LANDMARK_LABEL_SIZE = 12
+
+
+def _open_qc_axes(axes) -> None:
+    """Keep only the left and bottom axes on quality-check figures."""
+    for ax in np.atleast_1d(axes).flat:
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+
+
+def _layout_landmark_labels(entries, x_range, offset: float = 0.0) -> list:
+    """Return visible landmarks with non-overlapping vertical label levels."""
+    x_min, x_max = sorted(map(float, x_range))
+    min_separation = (x_max - x_min) * _LANDMARK_LABEL_MIN_SEPARATION
+    visible = []
+    for key, time_s in entries:
+        if time_s is None:
+            continue
+        x = float(time_s) - offset
+        if x_min <= x <= x_max:
+            visible.append((key, x))
+
+    lane_last_x = []
+    laid_out = []
+    for key, x in sorted(visible, key=lambda item: item[1]):
+        level = next(
+            (
+                index for index, last_x in enumerate(lane_last_x)
+                if x - last_x >= min_separation
+            ),
+            len(lane_last_x),
+        )
+        if level == len(lane_last_x):
+            lane_last_x.append(x)
+        else:
+            lane_last_x[level] = x
+        laid_out.append((key, x, level))
+    return laid_out
+
+
+def _draw_labeled_landmarks(axes, entries, labels, offset: float = 0.0) -> None:
+    """Draw landmark lines and stagger labels that would occupy the same x area."""
+    xlim = axes[0].get_xlim()
+    top_ax = axes[0]
+    for key, x, level in _layout_landmark_labels(entries, xlim, offset):
+        for ax in axes:
+            ax.axvline(
+                x, color=LANDMARK_COLORS[key], linestyle="--",
+                linewidth=0.8, alpha=0.7,
+            )
+        top_ax.annotate(
+            labels[key],
+            xy=(x, 1.0),
+            xycoords=top_ax.get_xaxis_transform(),
+            xytext=(0, 4 + level * _LANDMARK_LABEL_LEVEL_STEP_PT),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=_LANDMARK_LABEL_SIZE,
+            color=LANDMARK_COLORS[key],
+            clip_on=False,
+            annotation_clip=False,
+        )
 
 
 def _draw_landmark_lines(
@@ -49,25 +115,9 @@ def _draw_landmark_lines(
         ("behavioral_onset", landmarks.behavioral_onset_time or landmarks.equiv_behavioral_onset_time),
         ("off", landmarks.off_time or landmarks.equiv_off_time),
     ]
-    xlim = axes[0].get_xlim()
-    top_ax = axes[0]
-    for key, t in entries:
-        if t is None:
-            continue
-        x = t - offset
-        if x < xlim[0] or x > xlim[1]:
-            continue
-        for ax in axes:
-            ax.axvline(
-                x, color=LANDMARK_COLORS[key], linestyle="--", linewidth=0.8, alpha=0.7,
-            )
-        top_ax.text(
-            x, 1.02, LANDMARK_DISPLAY_LABELS[key],
-            transform=top_ax.get_xaxis_transform(),
-            ha="center", va="bottom",
-            color=LANDMARK_COLORS[key],
-            clip_on=False,
-        )
+    _draw_labeled_landmarks(
+        axes, entries, LANDMARK_DISPLAY_LABELS, offset=offset,
+    )
 
 
 def _cohort_color(session: Session) -> str:
@@ -97,6 +147,91 @@ def _cohort_filename_tag(session: Session) -> str:
     """
     key = classify_session(session)
     return _FILENAME_TAGS.get(key, key)
+
+
+def _baseline_window_s(session: Session) -> Optional[tuple]:
+    """Return the explicit analysis baseline, never the event-onset window."""
+    if session.landmarks is None or session.processed is None:
+        return None
+    lm = session.landmarks
+    if lm.baseline_window_s is not None:
+        start_s, end_s = map(float, lm.baseline_window_s)
+    else:
+        start_s = 0.0
+        end_s = lm.zscore_baseline_end_time
+        if end_s is None:
+            end_s = lm.heating_start_time
+    if end_s is None or not np.isfinite(end_s):
+        return None
+    t = session.processed.time
+    start_s = max(float(t[0]), float(start_s))
+    end_s = min(float(t[-1]), float(end_s))
+    return (start_s, end_s) if end_s > start_s else None
+
+
+@_style.styled
+def plot_baseline(
+    session: Session,
+    output_dir: str,
+    color: Optional[str] = None,
+) -> Optional[str]:
+    """Write a zoomed-out view of the session's actual baseline window."""
+    bounds = _baseline_window_s(session)
+    if bounds is None:
+        return None
+    os.makedirs(output_dir, exist_ok=True)
+    start_s, end_s = bounds
+    proc = session.processed
+    time_s = proc.time
+    mask = (time_s >= start_s) & (time_s <= end_s)
+    if not np.any(mask):
+        return None
+
+    if color is None:
+        color = _cohort_color(session)
+
+    fig, axes = plt.subplots(2, 1, figsize=(18, 12), sharex=True)
+    axes[0].plot(
+        time_s[mask], proc.photometry.dff_zscore[mask],
+        color=color, linewidth=0.4,
+    )
+    _style.add_zero_y(axes[0], ensure_visible=True)
+    axes[0].set_ylabel(DFF_LABEL)
+
+    axes[1].plot(
+        time_s[mask], proc.ecog_filtered[mask],
+        color=ECOG_COLOR, linewidth=0.4,
+    )
+    _style.add_zero_y(axes[1], ensure_visible=True)
+    axes[1].set_ylabel("Filt ECoG (µV)")
+    axes[1].set_xlabel("Time (s) - baseline")
+    axes[1].set_xlim(start_s, end_s)
+    _open_qc_axes(axes)
+
+    fig.suptitle(
+        f"{session.mouse_id} S{session.heating_session} - baseline"
+    )
+    stem = (
+        f"{session.mouse_id}_S{session.heating_session}_"
+        f"{_cohort_filename_tag(session)}_baseline"
+    )
+    path = os.path.join(output_dir, stem + ".png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    try:
+        _write_baseline_html(
+            session=session,
+            time_s=time_s[mask],
+            dff=proc.photometry.dff_zscore[mask],
+            ecog=proc.ecog_filtered[mask],
+            color=color,
+            x_range=(start_s, end_s),
+            html_path=os.path.join(output_dir, stem + ".html"),
+        )
+    except Exception:
+        pass
+    return path
 
 
 @_style.styled
@@ -137,13 +272,14 @@ def plot_sanity_check(
     ax = axes[0]
     ax.plot(time_s, raw.signal_470, color="blue", linewidth=0.3, label="470nm")
     ax.plot(time_s, raw.signal_405, color="violet", linewidth=0.3, label="405nm")
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Raw (V)", fontsize=_YLABEL_SIZE)
     ax.legend(loc="upper right")
 
     # 2. Corrected z-ΔF/F
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color=color, linewidth=0.3)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel(DFF_LABEL, fontsize=_YLABEL_SIZE)
 
     # 3. HPF/detection stream + transients
@@ -151,7 +287,7 @@ def plot_sanity_check(
     _det_label = f"HPF {DFF_LABEL}" if _used_hpf else DFF_LABEL
     ax = axes[2]
     ax.plot(time_s, proc.photometry.dff_hpf, color=color, linewidth=0.3)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     if transients:
         peak_times = [t.peak_time for t in transients]
         peak_idxs = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
@@ -165,11 +301,13 @@ def plot_sanity_check(
     # 4. Raw ECoG
     ax = axes[3]
     ax.plot(time_s, raw.ecog, color=ECOG_COLOR, linewidth=0.3)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Raw ECoG (µV)", fontsize=_YLABEL_SIZE)
 
     # 5. Filtered ECoG
     ax = axes[4]
     ax.plot(time_s, proc.ecog_filtered, color=ECOG_COLOR, linewidth=0.3)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Filt ECoG (µV)", fontsize=_YLABEL_SIZE)
 
     # 6. Temperature
@@ -183,6 +321,7 @@ def plot_sanity_check(
     ax.set_ylabel("Temp (°C)", fontsize=_YLABEL_SIZE)
     ax.set_xlabel("Time (s)")
 
+    _open_qc_axes(axes)
     _draw_landmark_lines(axes, session.landmarks, offset=0.0)
 
     fig.suptitle(f"{session.mouse_id} S{session.heating_session} - sanity check")
@@ -210,6 +349,7 @@ def plot_sanity_check(
         # HTML is best-effort; never block the PNG output if plotly is broken.
         pass
 
+    plot_baseline(session, output_dir, color=color)
     return path
 
 
@@ -251,17 +391,19 @@ def plot_zoomed(
     # 1. z-ΔF/F
     ax = axes[0]
     ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask], color=color, linewidth=0.4)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel(DFF_LABEL)
     ax.set_xlim(-window_s, window_s)
 
     # 2. Filtered ECoG
     ax = axes[1]
     ax.plot(rel_time[mask], proc.ecog_filtered[mask], color=ECOG_COLOR, linewidth=0.4)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Filt ECoG (µV)")
     ax.set_xlabel("Time relative to seizure onset (s)")
     ax.set_xlim(-window_s, window_s)
 
+    _open_qc_axes(axes)
     _draw_landmark_lines(axes, landmarks, offset=t_zero)
 
     fig.suptitle(f"{session.mouse_id} S{session.heating_session} - zoomed")
@@ -315,26 +457,9 @@ def _draw_landmark_lines_opto(axes, landmarks, offset: float = 0.0) -> None:
         ("ueo", landmarks.ueo_time or landmarks.equiv_ueo_time),
         ("off", landmarks.off_time or landmarks.equiv_off_time),
     ]
-    xlim = axes[0].get_xlim()
-    top_ax = axes[0]
-    for key, t in entries:
-        if t is None:
-            continue
-        x = t - offset
-        if x < xlim[0] or x > xlim[1]:
-            continue
-        for ax in axes:
-            ax.axvline(
-                x, color=LANDMARK_COLORS[key], linestyle="--",
-                linewidth=0.8, alpha=0.7,
-            )
-        top_ax.text(
-            x, 1.02, _OPTO_LANDMARK_LABELS[key],
-            transform=top_ax.get_xaxis_transform(),
-            ha="center", va="bottom",
-            color=LANDMARK_COLORS[key],
-            clip_on=False,
-        )
+    _draw_labeled_landmarks(
+        axes, entries, _OPTO_LANDMARK_LABELS, offset=offset,
+    )
 
 
 @_style.styled
@@ -374,13 +499,14 @@ def plot_sanity_check_opto(
     ax.plot(time_s, raw.signal_470, color="black", linewidth=0.3, label="470nm")
     ax.plot(time_s, raw.signal_405, color="black", linewidth=0.3,
             linestyle="--", label="405nm")
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Raw (V)", fontsize=_YLABEL_SIZE)
     ax.legend(loc="upper right")
 
     # 2. Corrected z-ΔF/F.
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color="black", linewidth=0.3)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel(DFF_LABEL, fontsize=_YLABEL_SIZE)
 
     # 3. HPF stream + detected transients.
@@ -391,7 +517,7 @@ def plot_sanity_check_opto(
     _det_label = f"HPF {DFF_LABEL}" if _used_hpf else DFF_LABEL
     ax = axes[2]
     ax.plot(time_s, proc.photometry.dff_hpf, color="black", linewidth=0.3)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     if transients:
         peak_times = [t.peak_time for t in transients]
         peak_idxs = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
@@ -407,6 +533,7 @@ def plot_sanity_check_opto(
     ax = axes[3]
     if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
         ax.plot(time_s, raw.stim_raw, color="black", linewidth=0.5)
+        _style.add_zero_y(ax, ensure_visible=True)
         ax.set_ylabel("Opto stim (V)", fontsize=_YLABEL_SIZE)
     else:
         ax.text(0.5, 0.5, "no opto stim channel",
@@ -415,6 +542,7 @@ def plot_sanity_check_opto(
         ax.set_ylabel("Opto stim", fontsize=_YLABEL_SIZE)
     ax.set_xlabel("Time (s)")
 
+    _open_qc_axes(axes)
     _draw_landmark_lines_opto(axes, session.landmarks, offset=0.0)
 
     fig.suptitle(
@@ -428,6 +556,7 @@ def plot_sanity_check_opto(
     )
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close("all")
+    plot_baseline(session, output_dir, color="black")
     return path
 
 
@@ -462,7 +591,7 @@ def plot_zoomed_opto(
     ax = axes[0]
     ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask],
             color="black", linewidth=0.4)
-    ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel(DFF_LABEL)
     ax.set_xlim(-window_s, window_s)
 
@@ -471,6 +600,7 @@ def plot_zoomed_opto(
     if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
         ax.plot(rel_time[mask], raw.stim_raw[mask],
                 color="black", linewidth=0.4)
+        _style.add_zero_y(ax, ensure_visible=True)
         ax.set_ylabel("Opto stim (V)")
     else:
         ax.text(0.5, 0.5, "no opto stim channel",
@@ -480,6 +610,7 @@ def plot_zoomed_opto(
     ax.set_xlabel("Time relative to stim onset (s)")
     ax.set_xlim(-window_s, window_s)
 
+    _open_qc_axes(axes)
     _draw_landmark_lines_opto(axes, landmarks, offset=t_zero)
 
     fig.suptitle(
@@ -508,10 +639,56 @@ def _decimate_for_html(arr: np.ndarray, max_points: int = 200_000) -> tuple:
     return arr[::step], step
 
 
+def _plotly_zero_line() -> dict:
+    """Canonical dark dashed zero-reference style for interactive QC plots."""
+    return dict(
+        color=_style.ZERO_LINE_COLOR,
+        dash="dash",
+        width=_style.ZERO_LINEWIDTH,
+    )
+
+
+def _plotly_range_with_zero(*arrays: np.ndarray) -> list:
+    """Return a data-driven y-range with visible padding around zero."""
+    lo = 0.0
+    hi = 0.0
+    for values in arrays:
+        values = np.asarray(values)
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            lo = min(lo, float(np.min(finite)))
+            hi = max(hi, float(np.max(finite)))
+    span = hi - lo
+    if span <= 0:
+        span = max(abs(lo), abs(hi), 1.0)
+    pad = 0.04 * span
+    return [lo - pad, hi + pad]
+
+
+def _open_qc_plotly_axes(fig) -> None:
+    """Show only bottom/left axis lines on interactive quality checks."""
+    axis_style = dict(
+        showline=True,
+        linewidth=1.5,
+        linecolor="black",
+        mirror=False,
+        ticks="outside",
+        showgrid=False,
+        zeroline=False,
+    )
+    fig.update_xaxes(**axis_style)
+    fig.update_yaxes(**axis_style)
+
+
+def _plotly_landmark_top_margin(max_level: int, base: int = 110) -> int:
+    """Reserve enough pixels for stacked landmark labels and the title."""
+    return max(base, 90 + (max_level + 1) * 42)
+
+
 def _add_landmark_overlays_plotly(
     fig, landmarks, *, offset: float = 0.0,
     x_range: Optional[tuple] = None,
-) -> None:
+) -> int:
     """Draw landmark vertical lines on every subplot row + a colored text
     label above the figure at each landmark's x-position. Mirrors
     `_draw_landmark_lines` for matplotlib.
@@ -525,7 +702,7 @@ def _add_landmark_overlays_plotly(
     x_range : (xmin, xmax) - landmarks outside this range are skipped.
     """
     if landmarks is None:
-        return
+        return -1
     entries = [
         ("heating_start", landmarks.heating_start_time),
         ("eec", landmarks.eec_time or landmarks.equiv_eec_time),
@@ -534,23 +711,96 @@ def _add_landmark_overlays_plotly(
                               or landmarks.equiv_behavioral_onset_time),
         ("off", landmarks.off_time or landmarks.equiv_off_time),
     ]
-    for key, t in entries:
-        if t is None:
-            continue
-        x = t - offset
-        if x_range is not None and (x < x_range[0] or x > x_range[1]):
-            continue
+    if x_range is None:
+        finite_times = [float(t) - offset for _, t in entries if t is not None]
+        if not finite_times:
+            return -1
+        x_range = (min(finite_times), max(finite_times))
+    layout = _layout_landmark_labels(entries, x_range, offset)
+    for key, x, level in layout:
         lcolor = LANDMARK_COLORS[key]
         # add_vline with row/col unset spans every subplot
         fig.add_vline(x=x, line=dict(color=lcolor, dash="dash", width=1.5),
                       opacity=0.7)
         fig.add_annotation(
-            x=x, y=1.02, xref="x", yref="paper",
+            x=x, y=1.0, xref="x", yref="paper",
+            yshift=8 + level * 42,
             # Plotly takes "<br>" for line breaks, not "\n" — translate.
             text=LANDMARK_DISPLAY_LABELS[key].replace("\n", "<br>"),
             showarrow=False, font=dict(color=lcolor, size=14),
             xanchor="center", yanchor="bottom",
         )
+    return max((level for _, _, level in layout), default=-1)
+
+
+def _write_baseline_html(
+    session: Session,
+    time_s: np.ndarray,
+    dff: np.ndarray,
+    ecog: np.ndarray,
+    color: str,
+    x_range: tuple,
+    html_path: str,
+) -> None:
+    """Interactive companion to the zoomed-out actual-baseline PNG."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    _, step = _decimate_for_html(time_s)
+    t_axis = time_s[::step]
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+    )
+    fig.add_trace(
+        go.Scattergl(
+            x=t_axis, y=dff[::step], mode="lines",
+            line=dict(color=color, width=1),
+            name=DFF_LABEL, showlegend=False,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scattergl(
+            x=t_axis, y=ecog[::step], mode="lines",
+            line=dict(color=ECOG_COLOR, width=1),
+            name="Filt ECoG", showlegend=False,
+        ),
+        row=2, col=1,
+    )
+    for row in (1, 2):
+        fig.add_hline(
+            y=0, line=_plotly_zero_line(), opacity=0.9,
+            row=row, col=1,
+        )
+    fig.update_layout(
+        title=f"{session.mouse_id} S{session.heating_session} - baseline",
+        height=900, width=1600,
+        margin=dict(t=90, l=100, r=40, b=70),
+        font=dict(size=18),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+    )
+    fig.update_yaxes(
+        title_text=DFF_LABEL,
+        range=_plotly_range_with_zero(dff[::step]),
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Filt ECoG (µV)",
+        range=_plotly_range_with_zero(ecog[::step]),
+        row=2, col=1,
+    )
+    fig.update_xaxes(
+        title_text="Time (s) - baseline", range=list(x_range), row=2, col=1,
+    )
+    fig.update_xaxes(range=list(x_range), row=1, col=1)
+    _open_qc_plotly_axes(fig)
+
+    import plotly.io as pio
+    pio.write_html(
+        fig, html_path, include_plotlyjs="cdn",
+        full_html=True, auto_open=False,
+    )
 
 
 def _write_peri_ictal_html(
@@ -584,26 +834,41 @@ def _write_peri_ictal_html(
                      name="Filt ECoG", showlegend=False),
         row=2, col=1,
     )
-    fig.add_hline(y=0, line=dict(color="black", dash="dash", width=1),
-                  opacity=0.4, row=1, col=1)
+    for row in (1, 2):
+        fig.add_hline(
+            y=0, line=_plotly_zero_line(), opacity=0.9,
+            row=row, col=1,
+        )
 
-    _add_landmark_overlays_plotly(
+    max_landmark_level = _add_landmark_overlays_plotly(
         fig, landmarks, offset=t_zero, x_range=(-window_s, window_s),
     )
 
     fig.update_layout(
         title=f"{session.mouse_id} S{session.heating_session} - zoomed",
         height=900, width=1600,
-        margin=dict(t=110, l=90, r=40, b=70),
+        margin=dict(
+            t=_plotly_landmark_top_margin(max_landmark_level),
+            l=90, r=40, b=70,
+        ),
         font=dict(size=18),
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
-    fig.update_yaxes(title_text=DFF_LABEL, row=1, col=1)
-    fig.update_yaxes(title_text="Filt ECoG (µV)", row=2, col=1)
+    fig.update_yaxes(
+        title_text=DFF_LABEL,
+        range=_plotly_range_with_zero(dff),
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Filt ECoG (µV)",
+        range=_plotly_range_with_zero(ecog),
+        row=2, col=1,
+    )
     fig.update_xaxes(title_text="Time relative to seizure onset (s)",
                      row=2, col=1, range=[-window_s, window_s])
     fig.update_xaxes(range=[-window_s, window_s], row=1, col=1)
+    _open_qc_plotly_axes(fig)
 
     import plotly.io as pio
     pio.write_html(fig, html_path, include_plotlyjs="cdn",
@@ -650,22 +915,27 @@ def _write_sanity_check_html(
                                mode="lines", line=dict(color="violet", width=1),
                                name="405 nm"),
                   row=1, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=1, col=1,
+    )
 
     # 2. Corrected z-ΔF/F
     fig.add_trace(go.Scattergl(x=t_axis, y=proc.photometry.dff_zscore[::step],
                                mode="lines", line=dict(color=color, width=1),
                                name=DFF_LABEL, showlegend=False),
                   row=2, col=1)
-    fig.add_hline(y=0, line=dict(color="black", dash="dash", width=1),
-                  opacity=0.4, row=2, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=2, col=1,
+    )
 
     # 3. Detection stream + transient markers
     fig.add_trace(go.Scattergl(x=t_axis, y=proc.photometry.dff_hpf[::step],
                                mode="lines", line=dict(color=color, width=1),
                                name=detection_label, showlegend=False),
                   row=3, col=1)
-    fig.add_hline(y=0, line=dict(color="black", dash="dash", width=1),
-                  opacity=0.4, row=3, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=3, col=1,
+    )
     if transients:
         peak_times = np.array([tr.peak_time for tr in transients])
         peak_idx = np.searchsorted(time_s, peak_times).clip(0, len(time_s) - 1)
@@ -681,11 +951,17 @@ def _write_sanity_check_html(
                                line=dict(color=ECOG_COLOR, width=1),
                                name="Raw ECoG", showlegend=False),
                   row=4, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=4, col=1,
+    )
     fig.add_trace(go.Scattergl(x=t_axis, y=proc.ecog_filtered[::step],
                                mode="lines",
                                line=dict(color=ECOG_COLOR, width=1),
                                name="Filt ECoG", showlegend=False),
                   row=5, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=5, col=1,
+    )
 
     # 6. Temperature
     fig.add_trace(go.Scattergl(x=t_axis, y=proc.temperature_smooth[::step],
@@ -699,7 +975,7 @@ def _write_sanity_check_html(
                       opacity=0.5, row=6, col=1)
 
     # Landmark overlays (heating_start, EEC, UEO, behavioral_onset, OFF)
-    _add_landmark_overlays_plotly(
+    max_landmark_level = _add_landmark_overlays_plotly(
         fig, session.landmarks, offset=0.0,
         x_range=(float(time_s[0]), float(time_s[-1])),
     )
@@ -708,20 +984,46 @@ def _write_sanity_check_html(
         title=(f"{session.mouse_id} S{session.heating_session} "
                f"({_cohort_filename_tag(session)}) - sanity check"),
         height=1500, width=1800,
-        margin=dict(t=110, l=110, r=40, b=70),
+        margin=dict(
+            t=_plotly_landmark_top_margin(max_landmark_level),
+            l=110, r=40, b=70,
+        ),
         font=dict(size=14),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
-    fig.update_yaxes(title_text="Raw (V)", row=1, col=1)
-    fig.update_yaxes(title_text=DFF_LABEL, row=2, col=1)
-    fig.update_yaxes(title_text=detection_label, row=3, col=1)
-    fig.update_yaxes(title_text="Raw ECoG (µV)", row=4, col=1)
-    fig.update_yaxes(title_text="Filt ECoG (µV)", row=5, col=1)
+    fig.update_yaxes(
+        title_text="Raw (V)",
+        range=_plotly_range_with_zero(
+            raw.signal_470[::step], raw.signal_405[::step],
+        ),
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text=DFF_LABEL,
+        range=_plotly_range_with_zero(proc.photometry.dff_zscore[::step]),
+        row=2, col=1,
+    )
+    fig.update_yaxes(
+        title_text=detection_label,
+        range=_plotly_range_with_zero(proc.photometry.dff_hpf[::step]),
+        row=3, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Raw ECoG (µV)",
+        range=_plotly_range_with_zero(raw.ecog[::step]),
+        row=4, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Filt ECoG (µV)",
+        range=_plotly_range_with_zero(proc.ecog_filtered[::step]),
+        row=5, col=1,
+    )
     fig.update_yaxes(title_text="Temp (°C)", row=6, col=1)
     fig.update_xaxes(title_text="Time (s)", row=6, col=1)
+    _open_qc_plotly_axes(fig)
 
     import plotly.io as pio
     pio.write_html(fig, html_path, include_plotlyjs="cdn",
@@ -768,6 +1070,9 @@ def _write_transient_review_html(
                                mode="lines", line=dict(color="violet", width=1),
                                name="405 nm"),
                   row=1, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=1, col=1,
+    )
 
     # Row 2: corrected dF/F (not z-scored)
     fig.add_trace(go.Scattergl(x=t_axis,
@@ -775,6 +1080,9 @@ def _write_transient_review_html(
                                mode="lines", line=dict(color=color, width=1),
                                name="ΔF/F", showlegend=False),
                   row=2, col=1)
+    fig.add_hline(
+        y=0, line=_plotly_zero_line(), opacity=0.9, row=2, col=1,
+    )
 
     # Rows 3..: detection stream + markers per prominence threshold
     det_signal = proc.photometry.dff_hpf
@@ -786,8 +1094,10 @@ def _write_transient_review_html(
                                    line=dict(color=color, width=1),
                                    name=f"prom ≥ {prom}", showlegend=False),
                       row=row, col=1)
-        fig.add_hline(y=0, line=dict(color="black", dash="dash", width=1),
-                      opacity=0.4, row=row, col=1)
+        fig.add_hline(
+            y=0, line=_plotly_zero_line(), opacity=0.9,
+            row=row, col=1,
+        )
 
         bl_trs = [tr for tr in transients_by_prominence.get(prom, [])
                   if tr.peak_time <= heat_start]
@@ -801,10 +1111,13 @@ def _write_transient_review_html(
                 name=f"peaks @ {prom}", showlegend=False,
             ), row=row, col=1)
 
-        fig.update_yaxes(title_text=f"{detection_label}<br>prom ≥ {prom}",
-                         row=row, col=1)
+        fig.update_yaxes(
+            title_text=f"{detection_label}<br>prom ≥ {prom}",
+            range=_plotly_range_with_zero(det_baseline),
+            row=row, col=1,
+        )
 
-    _add_landmark_overlays_plotly(
+    max_landmark_level = _add_landmark_overlays_plotly(
         fig, session.landmarks, offset=0.0,
         x_range=(0.0, float(heat_start)),
     )
@@ -813,17 +1126,34 @@ def _write_transient_review_html(
         title=(f"{session.mouse_id} S{session.heating_session} "
                f"({_cohort_filename_tag(session)}) - transient review (baseline)"),
         height=300 * n_rows, width=1800,
-        margin=dict(t=110, l=120, r=40, b=70),
+        margin=dict(
+            t=_plotly_landmark_top_margin(max_landmark_level),
+            l=120, r=40, b=70,
+        ),
         font=dict(size=14),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
-    fig.update_yaxes(title_text="Raw (V)", row=1, col=1)
-    fig.update_yaxes(title_text="Corrected ΔF/F", row=2, col=1)
+    fig.update_yaxes(
+        title_text="Raw (V)",
+        range=_plotly_range_with_zero(
+            raw.signal_470[baseline_mask][::step],
+            raw.signal_405[baseline_mask][::step],
+        ),
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Corrected ΔF/F",
+        range=_plotly_range_with_zero(
+            proc.photometry.dff[baseline_mask][::step],
+        ),
+        row=2, col=1,
+    )
     fig.update_xaxes(title_text="Time (s)", row=n_rows, col=1,
                      range=[0.0, float(heat_start)])
+    _open_qc_plotly_axes(fig)
 
     import plotly.io as pio
     pio.write_html(fig, html_path, include_plotlyjs="cdn",
@@ -864,12 +1194,14 @@ def plot_transient_review(
     ax = axes[0]
     ax.plot(t, raw.signal_470[mask], color="blue", linewidth=0.3, label="470nm")
     ax.plot(t, raw.signal_405[mask], color="violet", linewidth=0.3, label="405nm")
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Raw (V)")
     ax.legend(loc="upper right")
 
     # Row 1: corrected dF/F (NOT z-scored)
     ax = axes[1]
     ax.plot(t, proc.photometry.dff[mask], color=color, linewidth=0.3)
+    _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Corrected ΔF/F")
 
     # Rows 2..N: detection stream with transient markers at each prominence
@@ -880,7 +1212,7 @@ def plot_transient_review(
         ax = axes[2 + i]
         if det_signal is not None:
             ax.plot(t, det_signal[mask], color=color, linewidth=0.3)
-        ax.axhline(0, color="black", linestyle="--", linewidth=0.6, alpha=0.5)
+        _style.add_zero_y(ax, ensure_visible=True)
         transients = transients_by_prominence.get(prom, [])
         bl_transients = [tr for tr in transients if tr.peak_time <= heat_start]
         if bl_transients and det_signal is not None:
@@ -891,6 +1223,7 @@ def plot_transient_review(
         ax.set_ylabel(f"{_det_label}\nprom ≥ {prom}")
 
     axes[-1].set_xlabel("Time (s)")
+    _open_qc_axes(axes)
     fig.suptitle(
         f"{session.mouse_id} S{session.heating_session} - transient review (baseline)",
     )

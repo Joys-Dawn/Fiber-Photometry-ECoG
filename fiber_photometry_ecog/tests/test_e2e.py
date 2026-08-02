@@ -10,12 +10,6 @@ from pathlib import Path
 
 import numpy as np
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
-# Resolve repo root (two levels up from this file: tests/ -> fiber_photometry_ecog/ -> repo root)
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
 from fiber_photometry_ecog.data_loading import read_ppd, read_oep, synchronize
 from fiber_photometry_ecog.preprocessing import preprocess_session
 from fiber_photometry_ecog.core.config import (
@@ -50,6 +44,12 @@ from fiber_photometry_ecog.visualization import (
     plot_postictal,
     plot_spike_triggered,
 )
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# Resolve repo root (two levels up from this file: tests/ -> fiber_photometry_ecog/ -> repo root)
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # --- Test sessions (one per cohort) ---
 # Landmark times are approximate - real values would come from user marking on GUI.

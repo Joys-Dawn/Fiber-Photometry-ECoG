@@ -14,11 +14,10 @@ Usage:
 import argparse
 import csv
 import logging
-import os
 import re
 import sys
-import traceback
 from pathlib import Path
+from typing import Any, Dict
 
 import matplotlib
 matplotlib.use("agg")
@@ -47,6 +46,7 @@ from fiber_photometry_ecog.analysis.baseline_transients import compute_baseline_
 from fiber_photometry_ecog.analysis.preictal_mean import compute_preictal_mean
 from fiber_photometry_ecog.analysis.preictal_transients import compute_preictal_transients
 from fiber_photometry_ecog.analysis.ictal_mean import (
+    TriggeredAverage,
     compute_ictal_mean,
     compute_wide_ueo_triggered,
     mean_seizure_duration,
@@ -245,7 +245,6 @@ def load_sessions(experiment_dir: Path, test_mode: bool = False,
     #   - loadable:        include=True AND has files AND has landmark anchor
     #   - broken:          include=True but missing files or landmarks -> CRASH.
     # We refuse to silently drop sessions marked include=True.
-    excluded_by_log = [d for d in discovered if not d["include"]]
     candidates = [d for d in discovered if d["include"]]
     broken = []
     for d in candidates:
@@ -348,7 +347,7 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
     """
     from fiber_photometry_ecog.core.data_models import ProcessedData, PhotometryResult
     from fiber_photometry_ecog.preprocessing.photometry import (
-        z_score_baseline, detrend_moving_average,
+        z_score_baseline,
     )
 
     sk = _session_key(session)
@@ -569,6 +568,12 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                         ueo_heatmap_vlim_override=None,
                         ueo_heatmap_diagnostics=None,
                         cohort_classifier=None,
+                        trace_cohort_classifier=None,
+                        module_cohort_classifiers=None,
+                        scatter_options=None,
+                        module_scatter_options=None,
+                        stats_config=None,
+                        module_stats_configs=None,
                         ueo_xlabel="Time rel. to seizure onset (s)",
                         ueo_title_suffix="aligned to seizure onset",
                         is_opto=False,
@@ -577,7 +582,8 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                         ueo_yscale_exclude=None,
                         ueo_heatmap_exclude_from_vlim=None,
                         within_cohort_paired_periods=None,
-                        ictal_auc_per_landmark_override=None):
+                        ictal_auc_per_landmark_override=None,
+                        ictal_extrema_min_duration_s=None):
     """Run all 8 group analysis modules and generate group plots.
 
     `ueo_y_lim` (tuple of (lo, hi)) hard-clamps the y-axis range on the
@@ -627,14 +633,20 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     "period_a_label": "Heating", "period_b_label": "Ictal"}``). Requires
     ``run_stats=True``. Currently used by run_hyperthermia.py to add
     within-cohort Heating-vs-Ictal paired stats to DG_GRABne.
+
+    `ictal_extrema_min_duration_s` optionally replaces sample-wise ictal
+    max/min with duration-qualified maximin/minimax values. Dataset runners
+    opt in explicitly; the app and all other runners retain sample extrema.
     """
     classifier = cohort_classifier or classify_session
+    trace_classifier = trace_cohort_classifier or classifier
+    module_cohort_classifiers = module_cohort_classifiers or {}
+    module_scatter_options = module_scatter_options or {}
     strategy_root = results_base / strategy_folder_name(strategy)
     layout = ensure_layout(strategy_root)
     means_dir = str(layout["means"])
     transients_dir = str(layout["transients"])
     param_dir = str(layout["parameter_detection"])
-    qc_dir = str(layout["quality_check"])
     config = AnalysisConfig()
 
     # Ensure all sessions have spikes detected
@@ -648,10 +660,14 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         assign_all_controls(seizure_sessions, control_sessions, mode="temperature")
         log.info("  Pairing: %d seizure, %d control", len(seizure_sessions), len(control_sessions))
 
-    # Group by cohort (genotype × seized, unless overridden).
-    cohort_groups = {}
-    for s in sessions:
-        cohort_groups.setdefault(classifier(s), []).append(s)
+    def _group_sessions(active_classifier):
+        grouped = {}
+        for session in sessions:
+            grouped.setdefault(active_classifier(session), []).append(session)
+        return grouped
+
+    # Scalar and qualitative trace groupings can intentionally differ.
+    trace_cohort_groups = _group_sessions(trace_classifier)
 
     # Global mean seizure duration: used as the AUC integration window for the
     # ictal-mean triggered averages. Per spec D22, the AUC reflects actual
@@ -668,9 +684,9 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     # ±150s mean from being hijacked by the 1-2 long-tailed sessions, and
     # the extended -150..+1000s mean honestly reflects whatever N can span
     # 1000s. The heatmap path (below) shows ALL sessions via NaN-padding.
-    wide_ueo: Dict[str, "TriggeredAverage"] = {}
-    wide_ueo_extended: Dict[str, "TriggeredAverage"] = {}
-    for cohort_name, cohort_sessions in cohort_groups.items():
+    wide_ueo: Dict[str, TriggeredAverage] = {}
+    wide_ueo_extended: Dict[str, TriggeredAverage] = {}
+    for cohort_name, cohort_sessions in trace_cohort_groups.items():
         wide_ueo[cohort_name] = compute_wide_ueo_triggered(
             cohort_sessions,
             window_s=config.wide_triggered_window_s,
@@ -708,17 +724,25 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         ("Opto response", compute_opto_response, plot_opto_response, means_dir),
     ]
 
-    ictal_results_by_cohort = {}
     sta_cohort_sessions: Dict[str, list] = {}
     sta_spike_times: Dict[str, list] = {}
     # Captured for the optional stats pass. Shape matches what the stats
     # runner expects: {cohort_key: {module_name: GroupResult}}.
-    cohort_module_results: Dict[str, Dict[str, "Any"]] = {
-        c: {} for c in cohort_groups
-    }
-    for name, compute_fn, plot_fn, dest_dir in modules:
-        results = {}
-        for cohort_name, cohort_sessions in cohort_groups.items():
+    cohort_module_results: Dict[str, Dict[str, Any]] = {}
+
+    def _same_groups(left, right):
+        if left.keys() != right.keys():
+            return False
+        return all(
+            [id(s) for s in left[key]] == [id(s) for s in right[key]]
+            for key in left
+        )
+
+    def _compute_module(name, compute_fn, groups):
+        computed = {}
+        sta_sessions_by_cohort = {}
+        sta_spikes_by_cohort = {}
+        for cohort_name, cohort_sessions in groups.items():
             if name == "Spike-triggered averages":
                 # Same exclusion as transient analyses: ECoG-to-photometry
                 # crosstalk corrupts both transient detection and the
@@ -735,9 +759,9 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                     np.array([sp.time for sp in s.spikes]) if s.spikes else np.array([])
                     for s in sta_sessions
                 ]
-                sta_cohort_sessions[cohort_name] = sta_sessions
-                sta_spike_times[cohort_name] = spike_times_list
-                results[cohort_name] = compute_spike_triggered_average(
+                sta_sessions_by_cohort[cohort_name] = sta_sessions
+                sta_spikes_by_cohort[cohort_name] = spike_times_list
+                computed[cohort_name] = compute_spike_triggered_average(
                     sta_sessions, spike_times_list, config)
             elif name == "Ictal mean":
                 # Per spec D5: OFF AUC integrates over a fixed 100 s window
@@ -751,36 +775,68 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                 per_lm = {"OFF": 100.0}
                 if ictal_auc_per_landmark_override:
                     per_lm.update(ictal_auc_per_landmark_override)
-                results[cohort_name] = compute_ictal_mean(
+                computed[cohort_name] = compute_ictal_mean(
                     cohort_sessions, auc_end_s=global_mean_duration,
                     config=config,
                     auc_end_s_per_landmark=per_lm,
+                    extrema_min_duration_s=ictal_extrema_min_duration_s,
                 )
             else:
-                results[cohort_name] = compute_fn(cohort_sessions, config)
-        # Plot functions whose CSV outputs carry the experiment name take
-        # `name_prefix`; the older ones (transients modules, opto_response)
-        # ignore extra kwargs by being called positionally only. Switch to
-        # kwarg per-function to keep the call site uniform.
+                computed[cohort_name] = compute_fn(cohort_sessions, config)
+        return computed, sta_sessions_by_cohort, sta_spikes_by_cohort
+
+    trace_modules = {
+        "Pre-ictal mean", "Pre-ictal transients", "Ictal mean",
+        "Ictal transients", "Postictal", "Spike-triggered averages",
+    }
+    scatter_modules = {
+        "Cohort characteristics", "Baseline transients", "Pre-ictal mean",
+        "Ictal mean", "Postictal", "Spike-triggered averages",
+        "Opto response",
+    }
+
+    for name, compute_fn, plot_fn, dest_dir in modules:
+        module_classifier = module_cohort_classifiers.get(name, classifier)
+        module_groups = _group_sessions(module_classifier)
+        results, scalar_sta_sessions, scalar_sta_spikes = _compute_module(
+            name, compute_fn, module_groups
+        )
+        trace_results = None
+        if name in trace_modules:
+            if _same_groups(module_groups, trace_cohort_groups):
+                trace_results = results
+                trace_sta_sessions = scalar_sta_sessions
+                trace_sta_spikes = scalar_sta_spikes
+            else:
+                trace_results, trace_sta_sessions, trace_sta_spikes = (
+                    _compute_module(name, compute_fn, trace_cohort_groups)
+                )
+            if name == "Spike-triggered averages":
+                sta_cohort_sessions = trace_sta_sessions
+                sta_spike_times = trace_sta_spikes
+
         accepts_prefix = name in (
             "Cohort characteristics", "Pre-ictal mean", "Ictal mean",
             "Postictal", "Spike-triggered averages",
         )
+        plot_kwargs = {}
+        if accepts_prefix:
+            plot_kwargs["name_prefix"] = stats_name_prefix
+        if name in scatter_modules:
+            plot_kwargs["scatter_options"] = module_scatter_options.get(
+                name, scatter_options
+            )
+        if name in trace_modules:
+            plot_kwargs["trace_results"] = trace_results
         if name == "Ictal mean":
             # Opto renames UEO → "Stim on" for the AUC standalone filename
             # slug (AUC_stim_on_*.png), the trace-panel title, and the
             # values_auc CSV column ("Stim on AUC (40s)").
-            landmark_labels = {"UEO": "Stim on"} if is_opto else None
-            plot_fn(results, dest_dir,
-                    name_prefix=stats_name_prefix,
-                    landmark_labels=landmark_labels)
-        elif accepts_prefix:
-            plot_fn(results, dest_dir, name_prefix=stats_name_prefix)
-        else:
-            plot_fn(results, dest_dir)
+            plot_kwargs["landmark_labels"] = (
+                {"UEO": "Stim on"} if is_opto else None
+            )
+        plot_fn(results, dest_dir, **plot_kwargs)
         log.info("  Group %s: done", name)
-        if name == "Ictal mean":
-            ictal_results_by_cohort = results
         for cohort_name, group_result in results.items():
             cohort_module_results.setdefault(cohort_name, {})[name] = group_result
 
@@ -796,7 +852,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     # for display, without contaminating the strict mean/SEM aggregation
     # that drives the trace plot. Standard-window pre_s/post_s mirror the
     # trace plot so the two visuals share an x-axis.
-    if cohort_groups:
+    if trace_cohort_groups:
         if ueo_standard_window_s is not None:
             hm_lo, hm_hi = ueo_standard_window_s
             heatmap_pre = abs(float(hm_lo))
@@ -805,7 +861,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
             heatmap_pre = 150.0
             heatmap_post = 150.0
         paths = plot_ueo_aligned_heatmaps(
-            cohort_groups, means_dir,
+            trace_cohort_groups, means_dir,
             pre_s=heatmap_pre, post_s=heatmap_post,
             vlim_override=ueo_heatmap_vlim_override,
             diagnostics_out=ueo_heatmap_diagnostics,
@@ -832,7 +888,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     # annotation overlaid on the trace, so every session's values are
     # auditable by eye.
     n_done = 0
-    for cohort_name, cohort_sessions in cohort_groups.items():
+    for cohort_name, cohort_sessions in trace_cohort_groups.items():
         for s in cohort_sessions:
             lm = s.landmarks
             if lm is None or lm.heating_start_time is None:
@@ -843,6 +899,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                 s, param_dir,
                 is_opto=is_opto,
                 dff_label=ueo_dff_label,
+                extrema_min_duration_s=ictal_extrema_min_duration_s,
             )
             if p:
                 n_done += 1
@@ -883,6 +940,8 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
             means_dir=means_dir,
             transients_dir=transients_dir,
             name_prefix=stats_name_prefix,
+            config=stats_config,
+            module_configs=module_stats_configs,
             additional_rows_by_folder=additional_rows_by_folder or None,
         )
         for folder, p in out_paths.items():

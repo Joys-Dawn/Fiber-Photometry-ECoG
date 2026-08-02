@@ -142,7 +142,6 @@ def compare_paired_lmm(
         _describe(group_b_name, b_vals),
     ]
     n_pairs = int(len(complete_pairs))
-    n_mice = int(df["mouse_id"].nunique())
 
     if n_pairs < 2:
         return PairedTestResult(

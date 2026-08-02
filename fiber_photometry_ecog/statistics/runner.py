@@ -80,12 +80,12 @@ def _write_csv(rows: List[Dict[str, Any]], out_path: Path) -> Path:
     # test, and reporting them just adds noise to the CSV. The per-cohort
     # descriptives for those rows are already empty/zero so nothing
     # informative is lost.
+    source_df = pd.DataFrame(rows)
     rows = [r for r in rows if r.get("Test") != "None"]
-    if not rows:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame().to_csv(out_path, index=False)
-        return out_path
-    df = pd.DataFrame(rows)
+    # Keep the source schema when every row is filtered. A schema-less empty
+    # DataFrame writes a newline-only file that CSV readers cannot parse;
+    # a header-only file accurately records that no valid tests remained.
+    df = pd.DataFrame(rows) if rows else source_df.iloc[0:0].copy()
     # Stable column ordering: base info, descriptives, p-values, post-hocs.
     base_cols = ["Module", "Measurement", "Test", "Statistic", "p_value"]
     base_cols = [c for c in base_cols if c in df.columns]
@@ -124,6 +124,7 @@ def run_group_comparisons(
     transients_dir: str | Path,
     name_prefix: str,
     config: Optional[StatsConfig] = None,
+    module_configs: Optional[Dict[str, StatsConfig]] = None,
     additional_rows_by_folder: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Path]:
     """Run all per-measurement comparisons across the configured cohorts.
@@ -137,6 +138,9 @@ def run_group_comparisons(
         the existing per-module plots.
     config : optional `StatsConfig`. Defaults to the DS sz vs WT 2-way
         comparison. Raw p-values only - no multiple-comparison correction.
+    module_configs : optional per-module overrides. This supports datasets
+        whose baseline-transient comparison uses different biological groups
+        from the seizure-outcome comparison used by mean-signal modules.
 
     Returns
     -------
@@ -147,59 +151,58 @@ def run_group_comparisons(
     if config is None:
         config = StatsConfig()
 
-    cohorts_to_compare = list(config.cohorts_to_compare)
-    available = [c for c in cohorts_to_compare if c in cohort_results]
-    missing = [c for c in cohorts_to_compare if c not in cohort_results]
-    if missing:
-        logger.warning(
-            "Stats: cohorts not present in results, dropping: %s", missing
-        )
-    if len(available) < 2:
-        logger.warning(
-            "Stats: need at least 2 cohorts to compare; got %s - skipping",
-            available,
-        )
-        return {}
-    cohorts_to_compare = available
-    label_for = {c: config.label(c) for c in cohorts_to_compare}
-
     long_rows = extract_all(cohort_results)
-    grouped = group_values(long_rows, cohorts_to_compare)
-    if not grouped:
+    if not long_rows:
         logger.warning("Stats: no measurements available to compare")
         return {}
 
     # Run a test per measurement.
     rows_by_folder: Dict[str, List[Dict[str, Any]]] = {"means": [], "transients": []}
-    # We need to know the originating module name for each measurement -
-    # walk the registry alongside grouped values.
-    for (folder, module, measurement), values_by_group in grouped.items():
-        # Map values to display labels for nicer descriptives output.
-        relabelled = {label_for[c]: values_by_group[c] for c in cohorts_to_compare}
-        result = compare_independent_groups(
-            measurement=measurement,
-            values_by_group=relabelled,
-        )
-        # Restore cohort-key view for downstream column generation: the row
-        # writer iterates by cohort_key but pulls descriptives via label.
-        # `descriptives[i].name` is already a label - flip the map so the
-        # row writer can find each cohort's stats by key.
-        # We achieve this by storing the result with descriptives keyed by
-        # label, and translating in _row_for_result via label_for keys.
-        # (Replace descriptive .name field back to cohort_key for lookup.)
-        label_to_key = {v: k for k, v in label_for.items()}
-        for d in result.descriptives:
-            d.name = label_to_key.get(d.name, d.name)
-        for ph in result.posthocs:
-            ph.group1 = label_to_key.get(ph.group1, ph.group1)
-            ph.group2 = label_to_key.get(ph.group2, ph.group2)
+    module_configs = module_configs or {}
+    modules = list(dict.fromkeys(row["module"] for row in long_rows))
+    for module in modules:
+        active_config = module_configs.get(module, config)
+        requested = list(active_config.cohorts_to_compare)
+        module_rows = [row for row in long_rows if row["module"] == module]
+        present = {row["cohort"] for row in module_rows}
+        cohorts_to_compare = [c for c in requested if c in present]
+        missing = [c for c in requested if c not in present]
+        if missing:
+            logger.warning(
+                "Stats [%s]: cohorts not present, dropping: %s", module, missing
+            )
+        if len(cohorts_to_compare) < 2:
+            logger.warning(
+                "Stats [%s]: need at least 2 cohorts; got %s - skipping",
+                module, cohorts_to_compare,
+            )
+            continue
 
-        row = _row_for_result(
-            result, module=module, folder=folder,
-            cohorts_to_compare=cohorts_to_compare,
-            label_for=label_for,
-        )
-        rows_by_folder.setdefault(folder, []).append(row)
+        label_for = {
+            c: active_config.label(c) for c in cohorts_to_compare
+        }
+        grouped = group_values(module_rows, cohorts_to_compare)
+        for (folder, _, measurement), values_by_group in grouped.items():
+            relabelled = {
+                label_for[c]: values_by_group[c] for c in cohorts_to_compare
+            }
+            result = compare_independent_groups(
+                measurement=measurement,
+                values_by_group=relabelled,
+            )
+            label_to_key = {v: k for k, v in label_for.items()}
+            for d in result.descriptives:
+                d.name = label_to_key.get(d.name, d.name)
+            for ph in result.posthocs:
+                ph.group1 = label_to_key.get(ph.group1, ph.group1)
+                ph.group2 = label_to_key.get(ph.group2, ph.group2)
+
+            row = _row_for_result(
+                result, module=module, folder=folder,
+                cohorts_to_compare=cohorts_to_compare,
+                label_for=label_for,
+            )
+            rows_by_folder.setdefault(folder, []).append(row)
 
     # Additional rows (e.g. within-cohort paired-period comparisons produced
     # by `run_within_cohort_paired_periods`). They share the CSV so both the
