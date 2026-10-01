@@ -7,7 +7,7 @@ to the GUI pipeline.
 Protocol encoded here:
 * Channel 23 contains 1 s trains of 20 pulses at 20 Hz.
 * Use the first 10 trains from every recording (two mice have 30).
-* Normalize Strategy-C/IRLS dF/F against the full pre-first-train baseline.
+* Subtract the full pre-first-train mean from Strategy-C/IRLS dF/F.
 * Measure peak and signed AUC over [0, 10 s) after each train onset.
 * Treat trains as technical replicates and mice as the paired statistical unit.
 """
@@ -31,16 +31,12 @@ import numpy as np
 import pandas as pd
 
 from fiber_photometry_ecog.core.config import PhotometryConfig
-from fiber_photometry_ecog.preprocessing.photometry import (
-    IRLSStrategy,
-    z_score_baseline,
-)
+from fiber_photometry_ecog.preprocessing.photometry import IRLSStrategy
 from fiber_photometry_ecog.preprocessing.stim_detection import (
     detect_stim_bursts,
 )
 from fiber_photometry_ecog.statistics.paired import compare_paired
 from fiber_photometry_ecog.visualization import _style
-from fiber_photometry_ecog.visualization.colors import DFF_LABEL
 from fiber_photometry_ecog.visualization.group_plots import _legend_above
 from run_threshold_sweep import load_sessions
 
@@ -90,6 +86,7 @@ TRAIN_DURATION_RANGE_S = (0.90, 1.05)
 RESPONSE_WINDOW_S = 10.0
 TRACE_PRE_S = 5.0
 CACHE_VERSION = 1
+RAW_DFF_LABEL = "ΔF/F"
 
 
 @dataclass(frozen=True)
@@ -330,8 +327,18 @@ def _preprocess_dff(
     return dff
 
 
+def _baseline_correct_dff(
+    dff: np.ndarray,
+    fs: float,
+    baseline_end_s: float,
+) -> np.ndarray:
+    """Subtract the full pre-first-train mean without z-scoring."""
+    baseline_end_i = min(int(baseline_end_s * fs), len(dff))
+    return np.asarray(dff, dtype=float) - float(np.mean(dff[:baseline_end_i]))
+
+
 def _extract_event_metrics(
-    zdff: np.ndarray,
+    dff: np.ndarray,
     fs: float,
     trains: tuple[StimTrain, ...],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -348,12 +355,12 @@ def _extract_event_metrics(
         onset_i = int(round(train.onset_s * fs))
         lo = onset_i - pre_n
         hi = onset_i + response_n
-        if lo < 0 or hi > len(zdff):
+        if lo < 0 or hi > len(dff):
             raise ValueError(
                 f"Train {train.index} at {train.onset_s:.3f}s lacks the full "
                 f"[-{TRACE_PRE_S:g}, {RESPONSE_WINDOW_S:g}) s analysis window"
             )
-        trace = np.asarray(zdff[lo:hi], dtype=float)
+        trace = np.asarray(dff[lo:hi], dtype=float)
         if trace.size != offsets.size or not np.all(np.isfinite(trace)):
             raise ValueError(
                 f"Train {train.index} contains missing/non-finite photometry values"
@@ -413,9 +420,9 @@ def _analyze_session(
             f"{session.mouse_id}/{session.cohort}: invalid pre-stim baseline SD"
         )
 
-    zdff = z_score_baseline(dff, raw.fs, baseline_end_s)
+    baseline_corrected_dff = _baseline_correct_dff(dff, raw.fs, baseline_end_s)
     trace_time, event_traces, peaks, aucs = _extract_event_metrics(
-        zdff,
+        baseline_corrected_dff,
         raw.fs,
         selected,
     )
@@ -458,8 +465,8 @@ def _train_level_frame(analyses: list[SessionAnalysis]) -> pd.DataFrame:
                     "baseline_end_s": analysis.baseline_end_s,
                     "baseline_mean_raw_dff": analysis.baseline_mean_raw_dff,
                     "baseline_sd_raw_dff": analysis.baseline_sd_raw_dff,
-                    "evoked_peak_zdff": peak,
-                    "evoked_auc_zdff_s": auc,
+                    "evoked_peak_dff": peak,
+                    "evoked_auc_dff_s": auc,
                 }
             )
     frame = pd.DataFrame(rows)
@@ -485,8 +492,8 @@ def _mouse_level_frame(train_values: pd.DataFrame) -> pd.DataFrame:
                 f"{mouse_id}/{condition}: expected {TRAINS_TO_USE} technical "
                 f"replicates, found {len(group)}"
             )
-        peak = group["evoked_peak_zdff"].to_numpy(dtype=float)
-        auc = group["evoked_auc_zdff_s"].to_numpy(dtype=float)
+        peak = group["evoked_peak_dff"].to_numpy(dtype=float)
+        auc = group["evoked_auc_dff_s"].to_numpy(dtype=float)
         rows.append(
             {
                 "mouse_id": str(mouse_id),
@@ -494,11 +501,11 @@ def _mouse_level_frame(train_values: pd.DataFrame) -> pd.DataFrame:
                 "condition": condition,
                 "condition_label": condition_label,
                 "n_technical_replicates": len(group),
-                "evoked_peak_mean_zdff": float(np.mean(peak)),
+                "evoked_peak_mean_dff": float(np.mean(peak)),
                 "evoked_peak_technical_sem": float(
                     np.std(peak, ddof=1) / np.sqrt(len(peak))
                 ),
-                "evoked_auc_mean_zdff_s": float(np.mean(auc)),
+                "evoked_auc_mean_dff_s": float(np.mean(auc)),
                 "evoked_auc_technical_sem": float(
                     np.std(auc, ddof=1) / np.sqrt(len(auc))
                 ),
@@ -540,8 +547,8 @@ def _qc_frame(analyses: list[SessionAnalysis]) -> pd.DataFrame:
 
 def _paired_statistics(mouse_values: pd.DataFrame) -> pd.DataFrame:
     specs = (
-        ("Evoked peak (0-10 s)", "evoked_peak_mean_zdff"),
-        ("Evoked AUC (0-10 s)", "evoked_auc_mean_zdff_s"),
+        ("Evoked peak (0-10 s)", "evoked_peak_mean_dff"),
+        ("Evoked AUC (0-10 s)", "evoked_auc_mean_dff_s"),
     )
     rows = []
     for measurement, column in specs:
@@ -619,9 +626,11 @@ def _plot_stim_aligned(
         matrix = np.vstack(per_mouse)
         mean = np.mean(matrix, axis=0)
         sem = np.std(matrix, axis=0, ddof=1) / np.sqrt(len(matrix))
-        color = CONDITION_COLORS[condition]
+        color = "green"
         label = CONDITION_LABELS[condition]
-        ax.plot(common_time, mean, color=color, lw=3.0, label=label, zorder=3)
+        linestyle = "-" if condition == BEFORE else "--"
+        ax.plot(common_time, mean, color=color, lw=3.0,
+                linestyle=linestyle, label=label, zorder=3)
         ax.fill_between(
             common_time,
             mean - sem,
@@ -646,10 +655,11 @@ def _plot_stim_aligned(
     _style.add_zero_x(ax)
     ax.set_xlim(-TRACE_PRE_S, RESPONSE_WINDOW_S)
     ax.set_xlabel("Time rel. to train onset (s)")
-    ax.set_ylabel(DFF_LABEL)
+    ax.set_ylabel(RAW_DFF_LABEL)
     ax.set_title("GRAB-NE response to repeated LC stimulation")
     ax.spines[["right", "top"]].set_visible(False)
     _legend_above(ax, ncol=2, y_offset=1.14)
+    _style.finalize_publication_figure(fig)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -720,13 +730,19 @@ def _plot_paired_metric(
         )
 
     ax.set_xticks([0, 1])
-    ax.set_xticklabels(["Before", "After"])
+    ax.set_xticklabels(
+        ["Before", "After"],
+        rotation=45,
+        ha="right",
+        rotation_mode="anchor",
+    )
     ax.set_xlim(-0.45, 1.45)
-    ax.set_xlabel("Yohimbine")
+    ax.set_xlabel("Yohimbine", labelpad=80)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     _style.add_zero_y(ax, ensure_visible=True)
     ax.spines[["right", "top"]].set_visible(False)
+    _style.finalize_publication_figure(fig)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -793,7 +809,7 @@ def _write_parameters(output_root: Path, data_root: Path) -> Path:
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "input_root": str(data_root),
         "preprocessing": "Strategy C (IRLS with 405-nm isosbestic correction)",
-        "normalization": "z-score over the full pre-first-train baseline",
+        "normalization": "subtract the full pre-first-train dF/F baseline mean",
         "stim_channel": 23,
         "expected_protocol": {
             "pulse_frequency_hz": 20,
@@ -805,8 +821,8 @@ def _write_parameters(output_root: Path, data_root: Path) -> Path:
         "selected_trains": "first 10 per recording",
         "response_window_s": [0.0, RESPONSE_WINDOW_S],
         "response_window_end_inclusive": False,
-        "auc": "signed trapezoidal AUC of baseline-normalized z-dF/F",
-        "peak": "maximum baseline-normalized z-dF/F",
+        "auc": "signed trapezoidal AUC of baseline-corrected dF/F",
+        "peak": "maximum baseline-corrected dF/F",
         "technical_replicates": TRAINS_TO_USE,
         "statistical_unit": "mouse",
         "pairing_key": "mouse_id",
@@ -888,15 +904,15 @@ def run(
         ),
         _plot_paired_metric(
             mouse_values,
-            "evoked_auc_mean_zdff_s",
-            f"Evoked AUC\n({DFF_LABEL} x s)",
+            "evoked_auc_mean_dff_s",
+            f"Evoked AUC\n({RAW_DFF_LABEL} × s)",
             "Evoked AUC (0-10 s)",
             means_dir / "GRAB_opto_evoked_AUC_0_10s.png",
         ),
         _plot_paired_metric(
             mouse_values,
-            "evoked_peak_mean_zdff",
-            f"Evoked peak\n({DFF_LABEL})",
+            "evoked_peak_mean_dff",
+            f"Evoked peak\n({RAW_DFF_LABEL})",
             "Evoked peak (0-10 s)",
             means_dir / "GRAB_opto_evoked_peak_0_10s.png",
         ),

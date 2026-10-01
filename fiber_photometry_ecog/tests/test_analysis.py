@@ -399,6 +399,94 @@ class TestIctalMean:
         # Constant signal → baseline-subtracted → AUC = 0.0
         assert ta.auc == pytest.approx(0.0, abs=1e-10)
 
+    def test_triggered_auc_accepts_per_session_windows(self):
+        sessions = [
+            _make_session(
+                mouse_id="short", fs=100.0, duration_s=320.0,
+                ueo_time=150.0, off_time=160.0,
+            ),
+            _make_session(
+                mouse_id="long", fs=100.0, duration_s=320.0,
+                ueo_time=150.0, off_time=170.0,
+            ),
+        ]
+        for session in sessions:
+            fs = session.processed.fs
+            signal = session.processed.photometry.dff_zscore
+            signal[int(150.0 * fs):] = 1.0
+
+        result = compute_ictal_mean(
+            sessions,
+            auc_end_s=15.0,
+            config=AnalysisConfig(triggered_window_s=10.0),
+            auc_end_s_by_session={
+                ("short", None, 1): 10.0,
+                ("long", None, 1): 20.0,
+            },
+        )
+
+        ueo = result.triggered_averages["UEO"]
+        assert ueo.per_session_auc_window_s == [10.0, 20.0]
+        assert ueo.per_session_auc == pytest.approx([10.0, 20.0])
+        assert ueo.auc == pytest.approx(15.0)
+        assert result.triggered_averages["OFF"].per_session_auc_window_s == [
+            100.0, 100.0,
+        ]
+
+    def test_triggered_auc_can_integrate_only_positive_signal(self):
+        session = _make_session(
+            fs=100.0,
+            duration_s=320.0,
+            eec_time=140.0,
+            ueo_time=150.0,
+            off_time=170.0,
+        )
+        signal = session.processed.photometry.dff_zscore
+        signal[int(150.0 * session.processed.fs):] = -2.0
+
+        signed = compute_ictal_mean(
+            [session],
+            auc_end_s=20.0,
+            config=AnalysisConfig(triggered_window_s=10.0),
+        )
+        positive_only = compute_ictal_mean(
+            [session],
+            auc_end_s=20.0,
+            config=AnalysisConfig(triggered_window_s=10.0),
+            positive_auc_landmarks={"UEO"},
+        )
+
+        assert signed.triggered_averages["UEO"].per_session_auc == pytest.approx(
+            [-40.0]
+        )
+        ueo = positive_only.triggered_averages["UEO"]
+        assert ueo.per_session_auc == pytest.approx([0.0])
+        assert ueo.auc == pytest.approx(0.0)
+        assert ueo.auc_positive_only is True
+        assert positive_only.triggered_averages["EEC"].auc_positive_only is False
+
+    def test_triggered_auc_can_record_available_shorter_window(self):
+        session = _make_session(
+            fs=100.0,
+            duration_s=260.0,
+            ueo_time=150.0,
+            off_time=170.0,
+            max_temp_time=200.0,
+        )
+        signal = session.processed.photometry.dff_zscore
+        signal[int(200.0 * session.processed.fs):] = 1.0
+
+        result = compute_ictal_mean(
+            [session],
+            auc_end_s=100.0,
+            config=AnalysisConfig(triggered_window_s=10.0),
+            clip_auc_to_available=True,
+        )
+
+        max_temp = result.triggered_averages["max_temp"]
+        assert max_temp.per_session_auc_window_s == pytest.approx([59.99])
+        assert max_temp.per_session_auc == pytest.approx([59.99])
+
     def test_max_temp_triggered(self):
         s = _make_session(
             fs=100.0,

@@ -77,9 +77,11 @@ SUBFOLDER_UEO_X_WINDOWS = {
     "PTZ_GRABne": PTZ_UEO_X_WINDOW,
 }
 
-# DG_GRABne + DG_GRABneMutant share an explicit y-clamp so the two render
-# directly comparable side by side; previously DG was autoscale.
-DG_UEO_Y_LIM = (-30.0, 50.0)
+# Manuscript trace panels use tighter ranges to remove unused positive space.
+DG_UEO_Y_LIM = (-30.0, 40.0)
+MUTANT_UEO_Y_LIM = (-30.0, 25.0)
+GRAB_NE_BRIGHT_GREEN = "green"
+FIGURE6_AXES_SIZE_INCHES = (14.0, 6.0)
 
 # Reference subfolder whose auto-computed heatmap vlim is captured and
 # reused on its paired mutant subfolder so the color scales match.
@@ -104,6 +106,19 @@ ICTAL_EXTREMA_MIN_DURATION_S = {
     "DG_GRABne": 0.200,
     "LC_GCaMP": 0.200,
 }
+
+# Dataset-specific AUC policies for the publication DG/LC analyses. LC uses
+# the full 100 s response shown in its UEO-aligned traces. DG seizure
+# sessions use their own UEO-to-OFF duration; no-seizure sessions use the
+# seizure-group mean.
+LC_AUC_WINDOWS_S = {
+    "EEC": 100.0,
+    "UEO": 100.0,
+    "behavioral_onset": 100.0,
+    "max_temp": 100.0,
+}
+INDIVIDUAL_SEIZURE_AUC_SUBFOLDERS = {"DG_GRABne"}
+DG_POSITIVE_ONLY_AUC_LANDMARKS = {"EEC", "UEO"}
 
 
 def _seizure_outcome_classifier(session) -> str:
@@ -175,7 +190,7 @@ SUBFOLDER_WITHIN_COHORT_PAIRED_PERIODS: dict[str, list] = {
 #                     pooled view is the canonical one for the main figure.
 SUBFOLDERS = [
     ("DG_GRABne",       "hyperthermia_dg_grabne",        0.030, True,  DG_UEO_Y_LIM, True,  None,                           False),
-    ("DG_GRABneMutant", "hyperthermia_dg_grabne_mutant", 0.030, True,  DG_UEO_Y_LIM, False, None,                           False),
+    ("DG_GRABneMutant", "hyperthermia_dg_grabne_mutant", 0.030, True,  MUTANT_UEO_Y_LIM, False, None,                           False),
     ("DG_GRABne_NRI",   "hyperthermia_dg_grabne_nri",    0.030, True,  None,         False, None,                           False),
     ("FCD_GRABne",      "hyperthermia_fcd_grabne",       0.030, True,  None,         False, None,                           False),
     ("LC_GCaMP",        "hyperthermia_lc_gcamp",         0.015, True,  None,         True,  None,                           False),
@@ -317,7 +332,22 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
     run_group_analysis(sessions, STRATEGY, ds_key, results_base,
                         stats_name_prefix=prefix,
                         ueo_y_lim=ueo_y_lim, run_stats=run_stats,
+                        ueo_trace_colors=(
+                            {"DS_sz": GRAB_NE_BRIGHT_GREEN}
+                            if subfolder == "DG_GRABneMutant" else
+                            {"DS_sz": GRAB_NE_BRIGHT_GREEN,
+                             "FCD_sz": GRAB_NE_BRIGHT_GREEN,
+                             "WT_sz": GRAB_NE_BRIGHT_GREEN,
+                             "PTZ_pooled": GRAB_NE_BRIGHT_GREEN}
+                            if subfolder in {"FCD_GRABne", "PVT_GRABne", "PTZ_GRABne"}
+                            else None
+                        ),
                         ueo_standard_window_s=ueo_x_window,
+                        ueo_axes_size_inches=(
+                            FIGURE6_AXES_SIZE_INCHES
+                            if subfolder in {"PVT_GRABne", "FCD_GRABne", "PTZ_GRABne"}
+                            else None
+                        ),
                         ueo_heatmap_vlim_override=ueo_heatmap_vlim_override,
                         ueo_heatmap_diagnostics=ueo_heatmap_diagnostics,
                         cohort_classifier=cohort_classifier,
@@ -328,6 +358,17 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
                         stats_config=stats_config,
                         module_stats_configs=module_stats_configs,
                         within_cohort_paired_periods=within_cohort_paired_periods,
+                        ictal_auc_per_landmark_override=(
+                            LC_AUC_WINDOWS_S if subfolder == "LC_GCaMP" else None
+                        ),
+                        ictal_auc_use_individual_seizure_durations=(
+                            subfolder in INDIVIDUAL_SEIZURE_AUC_SUBFOLDERS
+                        ),
+                        ictal_auc_clip_to_available=(subfolder == "LC_GCaMP"),
+                        ictal_positive_auc_landmarks=(
+                            DG_POSITIVE_ONLY_AUC_LANDMARKS
+                            if subfolder == "DG_GRABne" else None
+                        ),
                         ictal_extrema_min_duration_s=extrema_min_duration_s)
 
 

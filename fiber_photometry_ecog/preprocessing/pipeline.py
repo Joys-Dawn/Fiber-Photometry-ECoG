@@ -82,10 +82,22 @@ def preprocess_session(session: Session, config: PreprocessingConfig) -> None:
         session.landmarks.zscore_baseline_end_time = session.landmarks.heating_start_time
 
     # --- Temperature ---
+    # A session-specific window takes precedence. Otherwise, the temperature
+    # baseline spans the complete pre-experimental period, from recording
+    # start through heating/stimulation onset. This matches the baseline used
+    # when reconstructing temperature landmarks from cached traces.
+    temperature_baseline_window_s = session.landmarks.baseline_window_s
+    if (temperature_baseline_window_s is None
+            and session.landmarks.heating_start_time is not None):
+        temperature_baseline_window_s = (
+            0.0,
+            float(session.landmarks.heating_start_time),
+        )
+
     temp_result = process_temperature(
         raw.temperature_raw, raw.temp_bit_volts, fs, config.temperature,
         slope=raw.temp_slope, intercept=raw.temp_intercept,
-        baseline_window_s=session.landmarks.baseline_window_s)
+        baseline_window_s=temperature_baseline_window_s)
 
     session.landmarks.baseline_temp = temp_result.baseline_temp
     session.landmarks.max_temp = temp_result.max_temp

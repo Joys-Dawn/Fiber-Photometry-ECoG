@@ -70,8 +70,8 @@ def _draw_labeled_landmarks(axes, entries, labels, offset: float = 0.0) -> None:
     for key, x, level in _layout_landmark_labels(entries, xlim, offset):
         for ax in axes:
             ax.axvline(
-                x, color=LANDMARK_COLORS[key], linestyle="--",
-                linewidth=0.8, alpha=0.7,
+                x, color=_style.EVENT_LINE_COLOR, linestyle="--",
+                linewidth=0.8, alpha=1.0,
             )
         top_ax.annotate(
             labels[key],
@@ -385,6 +385,11 @@ def plot_zoomed(
     mask = (rel_time >= -window_s) & (rel_time <= window_s)
 
     color = _cohort_color(session)
+    xlabel = (
+        "Time rel. to seizure onset (s)"
+        if session.n_seizures > 0
+        else "Time rel. to event onset (s)"
+    )
 
     fig, axes = plt.subplots(2, 1, figsize=(18, 12), sharex=True)
 
@@ -400,7 +405,7 @@ def plot_zoomed(
     ax.plot(rel_time[mask], proc.ecog_filtered[mask], color=ECOG_COLOR, linewidth=0.4)
     _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel("Filt ECoG (µV)")
-    ax.set_xlabel("Time relative to seizure onset (s)")
+    ax.set_xlabel(xlabel)
     ax.set_xlim(-window_s, window_s)
 
     _open_qc_axes(axes)
@@ -426,6 +431,7 @@ def plot_zoomed(
             landmarks=landmarks,
             t_zero=t_zero,
             window_s=window_s,
+            xlabel=xlabel,
             html_path=os.path.join(
                 output_dir,
                 f"{session.mouse_id}_S{session.heating_session}_{_cohort_filename_tag(session)}_peri_ictal.html",
@@ -720,8 +726,13 @@ def _add_landmark_overlays_plotly(
     for key, x, level in layout:
         lcolor = LANDMARK_COLORS[key]
         # add_vline with row/col unset spans every subplot
-        fig.add_vline(x=x, line=dict(color=lcolor, dash="dash", width=1.5),
-                      opacity=0.7)
+        fig.add_vline(
+            x=x,
+            line=dict(
+                color=_style.EVENT_LINE_COLOR, dash="dash", width=1.5,
+            ),
+            opacity=1.0,
+        )
         fig.add_annotation(
             x=x, y=1.0, xref="x", yref="paper",
             yshift=8 + level * 42,
@@ -812,6 +823,7 @@ def _write_peri_ictal_html(
     landmarks,
     t_zero: float,
     window_s: float,
+    xlabel: str,
     html_path: str,
 ) -> None:
     """Interactive companion to plot_zoomed's PNG. Two stacked traces with
@@ -865,7 +877,7 @@ def _write_peri_ictal_html(
         range=_plotly_range_with_zero(ecog),
         row=2, col=1,
     )
-    fig.update_xaxes(title_text="Time relative to seizure onset (s)",
+    fig.update_xaxes(title_text=xlabel,
                      row=2, col=1, range=[-window_s, window_s])
     fig.update_xaxes(range=[-window_s, window_s], row=1, col=1)
     _open_qc_plotly_axes(fig)

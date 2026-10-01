@@ -14,6 +14,11 @@ from fiber_photometry_ecog.analysis.baseline_transients import (
     BaselineTransientSessionResult,
 )
 from fiber_photometry_ecog.analysis.ictal_transients import IctalTransientGroupResult
+from fiber_photometry_ecog.analysis.ictal_mean import (
+    IctalMeanGroupResult,
+    IctalMeanSessionResult,
+    TriggeredAverage,
+)
 from fiber_photometry_ecog.analysis.opto_response import (
     OptoResponseGroupResult,
     OptoResponseSessionResult,
@@ -30,29 +35,37 @@ from fiber_photometry_ecog.visualization.group_plots import (
     _add_nested_period_labels,
     _grouped_scatter_figsize,
     _grouped_scatter_mean_sem,
-    _legend_above,
-    _legend_offset_above_title,
     _save_standalone_scatter,
     _scatter_mean_sem,
     _seizure_cohort_key,
     plot_baseline_transients,
+    plot_ictal_mean,
     plot_ictal_transients,
+    plot_opto_response,
     plot_preictal_mean_diagnostic,
+    plot_ueo_aligned_heatmaps,
+    plot_ueo_per_cohort,
 )
 from fiber_photometry_ecog.visualization.trace_plots import (
+    _add_landmark_overlays_plotly,
     _draw_landmark_lines,
     _layout_landmark_labels,
     _plotly_range_with_zero,
     plot_baseline,
+    plot_zoomed,
 )
 from run_hyperthermia import (
+    DG_POSITIVE_ONLY_AUC_LANDMARKS,
     ICTAL_EXTREMA_MIN_DURATION_S,
+    INDIVIDUAL_SEIZURE_AUC_SUBFOLDERS,
+    LC_AUC_WINDOWS_S,
     _genotype_classifier,
     _genotype_point_colors,
     _seizure_outcome_classifier,
     _source_point_colors,
 )
 import run_threshold_sweep as sweep
+import fiber_photometry_ecog.visualization.group_plots as group_plots
 
 
 def test_zero_reference_expands_positive_axis_and_uses_canonical_style():
@@ -68,6 +81,42 @@ def test_zero_reference_expands_positive_axis_and_uses_canonical_style():
     assert zero_line.get_linestyle() == "--"
     assert zero_line.get_linewidth() == _style.ZERO_LINEWIDTH
     plt.close(fig)
+
+
+def test_vertical_zero_reference_is_black():
+    fig, ax = plt.subplots()
+    _style.add_zero_x(ax)
+
+    assert ax.lines[-1].get_color() == "black"
+    assert ax.lines[-1].get_linestyle() == "--"
+    plt.close(fig)
+
+
+def test_fixed_axes_size_survives_long_labels_colorbars_and_tight_export(tmp_path):
+    for with_colorbar in (False, True):
+        for long_labels in (False, True):
+            with plt.rc_context(_style._PLOT_RC):
+                fig, ax = plt.subplots(figsize=_style.FIG_WIDE)
+                colorbar = None
+                if with_colorbar:
+                    im = ax.imshow(np.arange(12).reshape(3, 4), aspect="auto")
+                    colorbar = fig.colorbar(im, ax=ax)
+                    colorbar.set_label("Signal with a longer label" if long_labels else "Signal")
+                else:
+                    ax.plot([0, 1], [0, 1])
+                ax.set_xlabel("Time relative to seizure onset (s)" if long_labels else "Time")
+                ax.set_ylabel("A longer signal label\nwith a second line" if long_labels else "Signal")
+                _style.finalize_publication_figure(fig)
+                _style.fix_axes_size(ax, (14.0, 6.0), colorbar=colorbar)
+                fig.savefig(tmp_path / f"{with_colorbar}_{long_labels}.png",
+                            dpi=30, bbox_inches="tight")
+                fig.canvas.draw()
+                np.testing.assert_allclose(ax.get_window_extent().size / fig.dpi, (14.0, 6.0))
+                if colorbar is not None:
+                    np.testing.assert_allclose(
+                        colorbar.ax.get_window_extent().height / fig.dpi, 6.0,
+                    )
+                plt.close(fig)
 
 
 def test_plotly_zero_range_is_data_driven_and_padded():
@@ -166,6 +215,16 @@ def test_coincident_landmark_labels_use_distinct_vertical_levels():
     for ax in axes:
         ax.set_xlim(0.0, 30.0)
     _draw_landmark_lines(axes, landmarks)
+    assert all(
+        line.get_color() == "black"
+        for axis in axes
+        for line in axis.lines
+    )
+    assert all(
+        line.get_alpha() == 1.0
+        for axis in axes
+        for line in axis.lines
+    )
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     landmark_boxes = [
@@ -174,6 +233,22 @@ def test_coincident_landmark_labels_use_distinct_vertical_levels():
     assert len(landmark_boxes) == 3
     assert not landmark_boxes[0].overlaps(landmark_boxes[1])
     plt.close(fig)
+
+
+def test_plotly_landmark_lines_are_black_and_labels_keep_their_colors():
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(rows=2, cols=1)
+    landmarks = SessionLandmarks(ueo_time=10.0, off_time=20.0)
+    _add_landmark_overlays_plotly(
+        fig, landmarks, x_range=(0.0, 30.0),
+    )
+
+    assert all(shape.line.color == "black" for shape in fig.layout.shapes)
+    assert all(shape.opacity == 1.0 for shape in fig.layout.shapes)
+    assert {annotation.font.color for annotation in fig.layout.annotations} == {
+        "red", "blue",
+    }
 
 
 def test_pooled_hyperthermia_uses_actual_seizure_cohort_for_characteristics():
@@ -210,31 +285,47 @@ def test_nested_period_and_cohort_labels_do_not_overlap():
         plt.close(fig)
 
 
-def test_summary_trace_legend_clears_wrapped_title():
+def test_publication_finalizer_removes_titles_legends_and_sparsifies_ticks():
     with plt.rc_context(_style._PLOT_RC):
         fig, ax = plt.subplots(figsize=(_style.PANEL_W, _style.PANEL_H))
-        title = "earliest\nelectrographic change"
         ax.plot([0.0, 1.0], [0.0, 1.0], label="PTZ pooled")
-        ax.set_title(title)
-        _legend_above(ax, y_offset=_legend_offset_above_title(title))
-        fig.canvas.draw()
+        ax.set_title("earliest\nelectrographic change")
+        ax.legend()
+        fig.suptitle("Summary")
 
-        renderer = fig.canvas.get_renderer()
-        assert not ax.title.get_window_extent(renderer).overlaps(
-            ax.get_legend().get_window_extent(renderer)
-        )
+        _style.finalize_publication_figure(fig)
+
+        assert ax.get_title() == ""
+        assert fig._suptitle.get_text() == ""
+        assert ax.get_legend() is None
+        assert ax.xaxis.get_major_locator().__class__.__name__ == "MaxNLocator"
+        assert ax.yaxis.get_major_locator().__class__.__name__ == "MaxNLocator"
         plt.close(fig)
 
 
-def test_standalone_scatter_with_title_is_saved(tmp_path):
+def test_standalone_scatter_suppresses_title_and_legend(tmp_path, monkeypatch):
     path = tmp_path / "standalone.png"
+    checked = False
+    original_savefig = Figure.savefig
+
+    def check_figure(figure, *args, **kwargs):
+        nonlocal checked
+        assert figure.axes[0].get_title() == ""
+        assert figure.axes[0].get_legend() is None
+        assert figure.get_size_inches()[0] == 12.0
+        checked = True
+        return original_savefig(figure, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", check_figure)
     _save_standalone_scatter(
         {"Seizure": ([1.0, 2.0], 1.5, 0.5, [("m1", 1), ("m2", 1)])},
         "AUC",
         str(path),
         title="AUC - seizure onset",
+        scatter_options={"standalone_width": 12.0},
         zero_line=True,
     )
+    assert checked
     assert path.exists()
     assert path.stat().st_size > 0
 
@@ -269,8 +360,8 @@ def test_ictal_transient_summary_labels_and_legends_do_not_overlap(
             artists = []
             for axis in figure.axes:
                 artists.extend([axis.xaxis.label, axis.yaxis.label])
-                if axis.get_legend() is not None:
-                    artists.append(axis.get_legend())
+                assert axis.get_title() == ""
+                assert axis.get_legend() is None
             boxes = [artist.get_window_extent(renderer) for artist in artists]
             assert all(
                 not first.overlaps(second)
@@ -398,6 +489,148 @@ def test_baseline_plot_uses_explicit_window_and_autoscales_y_axes(
     assert '"range":[2.0,8.0]' in html
 
 
+def _aligned_session(mouse_id: str, n_seizures: int) -> Session:
+    time = np.arange(0.0, 20.0, 0.1)
+    landmarks = (
+        SessionLandmarks(ueo_time=10.0)
+        if n_seizures
+        else SessionLandmarks(equiv_ueo_time=10.0)
+    )
+    signal = np.sin(time)
+    return Session(
+        mouse_id=mouse_id,
+        genotype="Scn1a",
+        heating_session=1,
+        n_seizures=n_seizures,
+        landmarks=landmarks,
+        processed=ProcessedData(
+            photometry=PhotometryResult(
+                dff=signal,
+                dff_zscore=signal,
+                dff_hpf=signal,
+            ),
+            ecog_filtered=signal,
+            time=time,
+            fs=10.0,
+        ),
+    )
+
+
+def test_zoomed_trace_uses_seizure_or_event_onset_label(
+    tmp_path, monkeypatch,
+):
+    saved_xlabels = {}
+    original_savefig = Figure.savefig
+
+    def capture_xlabel(figure, path, *args, **kwargs):
+        saved_xlabels[str(path)] = figure.axes[-1].get_xlabel()
+        return original_savefig(figure, path, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_xlabel)
+    plot_zoomed(_aligned_session("seizure", 1), str(tmp_path), window_s=5.0)
+    plot_zoomed(_aligned_session("control", 0), str(tmp_path), window_s=5.0)
+
+    assert any(
+        label == "Time rel. to seizure onset (s)"
+        for label in saved_xlabels.values()
+    )
+    assert any(
+        label == "Time rel. to event onset (s)"
+        for label in saved_xlabels.values()
+    )
+    seizure_html = next(tmp_path.glob("seizure_*_peri_ictal.html"))
+    control_html = next(tmp_path.glob("control_*_peri_ictal.html"))
+    assert "Time rel. to seizure onset (s)" in seizure_html.read_text("utf-8")
+    assert "Time rel. to event onset (s)" in control_html.read_text("utf-8")
+
+
+def _triggered_average() -> TriggeredAverage:
+    time = np.linspace(-5.0, 5.0, 11)
+    signal = np.linspace(-1.0, 1.0, 11)
+    return TriggeredAverage(
+        time_axis=time,
+        mean_trace=signal,
+        sem_trace=np.full_like(signal, 0.1),
+        auc=1.0,
+        per_session_auc=[1.0],
+        per_session_traces=[signal],
+        auc_window_s=5.0,
+        per_session_meta=[("m1", 1)],
+    )
+
+
+def test_group_traces_use_event_label_for_no_seizure_cohorts(
+    tmp_path, monkeypatch,
+):
+    captured = []
+
+    def capture_labels(figure, path, *args, **kwargs):
+        if str(path).endswith("summary_UEO_aligned_traces.png"):
+            assert all(axis.get_title() == "" for axis in figure.axes)
+            assert all(axis.get_legend() is None for axis in figure.axes)
+            captured.extend(axis.get_xlabel() for axis in figure.axes)
+
+    monkeypatch.setattr(Figure, "savefig", capture_labels)
+    plot_ueo_per_cohort(
+        {"DS_sz": _triggered_average(), "DS_no_sz": _triggered_average()},
+        str(tmp_path),
+    )
+
+    assert captured == [
+        "Time rel. to\nseizure onset (s)",
+        "Time rel. to\nevent onset (s)",
+    ]
+
+
+def test_group_traces_honor_explicit_shared_y_ticks(tmp_path, monkeypatch):
+    captured = []
+
+    def capture_ticks(figure, path, *args, **kwargs):
+        captured.extend(
+            tuple(axis.get_yticks())
+            for axis in figure.axes
+            if axis.axison
+        )
+
+    monkeypatch.setattr(Figure, "savefig", capture_ticks)
+    expected = (-0.1, 0.0, 0.1, 0.2, 0.3, 0.4)
+    plot_ueo_per_cohort(
+        {"10HZ_DG": _triggered_average(), "10HZ_DG_CPP": _triggered_average()},
+        str(tmp_path),
+        y_lim_override=(-0.1, 0.4),
+        y_ticks_override=expected,
+    )
+
+    assert captured
+    assert all(ticks == expected for ticks in captured)
+
+
+def test_heatmap_session_ticks_match_standard_plot_font_size(
+    tmp_path, monkeypatch,
+):
+    captured_sizes = []
+    captured_xlabels = []
+
+    def capture_sizes(figure, path, *args, **kwargs):
+        captured_sizes.extend(
+            label.get_fontsize()
+            for label in figure.axes[0].get_yticklabels()
+        )
+        captured_xlabels.append(figure.axes[0].get_xlabel())
+
+    monkeypatch.setattr(Figure, "savefig", capture_sizes)
+    plot_ueo_aligned_heatmaps(
+        {"DS_no_sz": [_aligned_session("control", 0)]},
+        str(tmp_path),
+        pre_s=6.0,
+        post_s=6.0,
+    )
+
+    assert captured_sizes
+    assert set(captured_sizes) == {float(_style.TICK_SIZE)}
+    assert set(captured_xlabels) == {"Time rel. to event onset (s)"}
+
+
 def _baseline_group(prefix: str, values: list[float]) -> BaselineTransientGroupResult:
     rows = [
         BaselineTransientSessionResult(
@@ -469,6 +702,128 @@ def _opto_group(prefix: str, values: list[float]) -> OptoResponseGroupResult:
     ])
 
 
+def test_auc_scatter_labels_include_signal_units(tmp_path, monkeypatch):
+    labels = []
+    original_scatter = group_plots._scatter_mean_sem
+
+    def capture_scatter(ax, cohorts, ylabel, *args, **kwargs):
+        labels.append(ylabel)
+        return original_scatter(ax, cohorts, ylabel, *args, **kwargs)
+
+    monkeypatch.setattr(group_plots, "_scatter_mean_sem", capture_scatter)
+    monkeypatch.setattr(Figure, "savefig", lambda *_args, **_kwargs: None)
+
+    session_result = IctalMeanSessionResult(
+        mouse_id="m1",
+        heating_session=1,
+        seizure_mean=1.0,
+        baseline_mean=0.0,
+        delta_preictal_ictal=1.0,
+        delta_preictal_ictal_max=2.0,
+        delta_preictal_ictal_min=-1.0,
+    )
+    ictal_result = IctalMeanGroupResult(
+        session_results=[session_result],
+        seizure_mean=1.0,
+        seizure_sem=0.0,
+        baseline_mean=0.0,
+        baseline_sem=0.0,
+        delta_mean=1.0,
+        delta_sem=0.0,
+        triggered_averages={"UEO": _triggered_average()},
+        delta_max_mean=2.0,
+        delta_max_sem=0.0,
+        delta_min_mean=-1.0,
+        delta_min_sem=0.0,
+    )
+    plot_ictal_mean(
+        {"DS_sz": ictal_result}, str(tmp_path), dff_label="ΔF/F",
+    )
+    plot_opto_response(
+        {"10HZ_DG": _opto_group("m", [1.0, 2.0])},
+        str(tmp_path),
+        dff_label="ΔF/F",
+    )
+
+    assert "AUC\n(ΔF/F × s)" in labels
+    assert "Stim AUC\n(ΔF/F × s)" in labels
+
+
+def test_variable_auc_windows_are_explicit_in_values_csv(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(Figure, "savefig", lambda *_args, **_kwargs: None)
+    triggered = _triggered_average()
+    triggered.per_session_auc = [10.0, 20.0]
+    triggered.per_session_traces = [
+        triggered.mean_trace.copy(), triggered.mean_trace.copy(),
+    ]
+    triggered.per_session_meta = [("m1", 1), ("m2", 1)]
+    triggered.per_session_auc_window_s = [10.0, 20.0]
+
+    session_result = IctalMeanSessionResult(
+        mouse_id="m1",
+        heating_session=1,
+        seizure_mean=1.0,
+        baseline_mean=0.0,
+        delta_preictal_ictal=1.0,
+        delta_preictal_ictal_max=2.0,
+        delta_preictal_ictal_min=-1.0,
+    )
+    result = IctalMeanGroupResult(
+        session_results=[session_result],
+        seizure_mean=1.0,
+        seizure_sem=0.0,
+        baseline_mean=0.0,
+        baseline_sem=0.0,
+        delta_mean=1.0,
+        delta_sem=0.0,
+        triggered_averages={"UEO": triggered},
+        delta_max_mean=2.0,
+        delta_max_sem=0.0,
+        delta_min_mean=-1.0,
+        delta_min_sem=0.0,
+    )
+
+    plot_ictal_mean({"Seizure": result}, str(tmp_path), name_prefix="DG")
+
+    values = pd.read_csv(tmp_path / "values_auc_DG.csv")
+    assert "UEO AUC (variable window)" in values.columns
+    assert values["UEO AUC window (s)"].tolist() == [10.0, 20.0]
+
+
+def test_positive_only_auc_is_explicit_in_plot_and_values_labels(
+    tmp_path, monkeypatch,
+):
+    labels = []
+    original_scatter = group_plots._scatter_mean_sem
+
+    def capture_scatter(ax, cohorts, ylabel, *args, **kwargs):
+        labels.append(ylabel)
+        return original_scatter(ax, cohorts, ylabel, *args, **kwargs)
+
+    monkeypatch.setattr(group_plots, "_scatter_mean_sem", capture_scatter)
+    monkeypatch.setattr(Figure, "savefig", lambda *_args, **_kwargs: None)
+    triggered = _triggered_average()
+    triggered.auc_positive_only = True
+    result = IctalMeanGroupResult(
+        session_results=[],
+        seizure_mean=0.0,
+        seizure_sem=0.0,
+        baseline_mean=0.0,
+        baseline_sem=0.0,
+        delta_mean=0.0,
+        delta_sem=0.0,
+        triggered_averages={"UEO": triggered},
+    )
+
+    plot_ictal_mean({"Seizure": result}, str(tmp_path), name_prefix="DG")
+
+    assert "AUC above 0\n(z_ΔF/F × s)" in labels
+    values = pd.read_csv(tmp_path / "values_auc_DG.csv")
+    assert "UEO positive-only AUC (5s)" in values.columns
+
+
 def test_statistics_support_different_comparison_groups_per_module(tmp_path):
     cohort_results = {
         "Seizure": {"Opto response": _opto_group("s", [4.0, 5.0, 6.0])},
@@ -524,17 +879,33 @@ def test_hyperthermia_runner_classifiers_keep_pooling_dataset_specific():
         "DG_GRABne": 0.200,
         "LC_GCaMP": 0.200,
     }
+    assert INDIVIDUAL_SEIZURE_AUC_SUBFOLDERS == {"DG_GRABne"}
+    assert DG_POSITIVE_ONLY_AUC_LANDMARKS == {"EEC", "UEO"}
+    assert LC_AUC_WINDOWS_S == {
+        "EEC": 100.0,
+        "UEO": 100.0,
+        "behavioral_onset": 100.0,
+        "max_temp": 100.0,
+    }
 
 
 def test_group_runner_keeps_scalar_and_trace_groupings_separate(
     tmp_path, monkeypatch,
 ):
     sessions = [
-        Session("ds1", "Scn1a", n_seizures=1),
-        Session("wt1", "WT", n_seizures=1),
+        Session(
+            "ds1", "Scn1a", n_seizures=1,
+            landmarks=SessionLandmarks(ueo_time=0.0, off_time=10.0),
+        ),
+        Session(
+            "wt1", "WT", n_seizures=1,
+            landmarks=SessionLandmarks(ueo_time=0.0, off_time=10.0),
+        ),
     ]
     captures = {}
     ictal_extrema_durations = []
+    ictal_auc_windows = []
+    ictal_positive_landmarks = []
 
     def generic_compute(group_sessions, *_args, **_kwargs):
         rows = [
@@ -586,6 +957,8 @@ def test_group_runner_keeps_scalar_and_trace_groupings_separate(
 
     def compute_ictal(group_sessions, *_args, **kwargs):
         ictal_extrema_durations.append(kwargs["extrema_min_duration_s"])
+        ictal_auc_windows.append(kwargs["auc_end_s_by_session"])
+        ictal_positive_landmarks.append(kwargs["positive_auc_landmarks"])
         return generic_compute(group_sessions)
 
     monkeypatch.setattr(sweep, "compute_ictal_mean", compute_ictal)
@@ -614,6 +987,8 @@ def test_group_runner_keeps_scalar_and_trace_groupings_separate(
         module_cohort_classifiers={
             "Baseline transients": _genotype_classifier,
         },
+        ictal_auc_use_individual_seizure_durations=True,
+        ictal_positive_auc_landmarks={"EEC", "UEO"},
         ictal_extrema_min_duration_s=0.200,
     )
 
@@ -627,3 +1002,7 @@ def test_group_runner_keeps_scalar_and_trace_groupings_separate(
     }
     assert set(result) == {"Seizure", "DS", "WT"}
     assert ictal_extrema_durations == [0.200, 0.200, 0.200]
+    assert ictal_auc_windows == [
+        {("ds1", None, 1): 10.0, ("wt1", None, 1): 10.0},
+    ] * 3
+    assert ictal_positive_landmarks == [{"EEC", "UEO"}] * 3

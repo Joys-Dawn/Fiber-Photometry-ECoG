@@ -334,13 +334,14 @@ def _save_standalone_scatter(cohorts: Dict[str, tuple], ylabel: str, path: str,
 
     `xtick_rotation`: pass-through to `_scatter_mean_sem`. None (default)
     lets that helper auto-rotate multi-line opto labels.
-    `title`: optional axes title rendered above the panel.
+    `title`: retained for caller compatibility; publication export suppresses it.
     """
     n_cohorts = max(len(cohorts), 1)
     base_w, base_h = _style.FIG_SCATTER
     # Slim 2.5"/cohort + 3" pad (mirrors the slice-physiology house style):
     # keeps the scatter clouds tight enough to read as a vertical rectangle.
-    width = max(base_w, 3.0 + 2.5 * n_cohorts)
+    requested_width = float((scatter_options or {}).get("standalone_width", 0.0))
+    width = max(base_w, 3.0 + 2.5 * n_cohorts, requested_width)
     fig, ax = plt.subplots(figsize=(width, base_h))
     _scatter_mean_sem(
         ax, cohorts, ylabel, xtick_rotation=xtick_rotation,
@@ -348,7 +349,7 @@ def _save_standalone_scatter(cohorts: Dict[str, tuple], ylabel: str, path: str,
     )
     if title:
         ax.set_title(title)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close(fig)
 
 
@@ -357,12 +358,17 @@ def _legend_offset_above_title(title: str) -> float:
     return 1.27 + 0.18 * title.count("\n")
 
 
-def _save_standalone(draw_fn, path: str, figsize=None) -> str:
+def _save_publication_figure(fig, path, *, dpi: int = 150) -> None:
+    _style.finalize_publication_figure(fig)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+
+
+def _save_standalone(draw_fn, path: str, figsize=None, axes_size_inches=None) -> str:
     """Generic standalone-export helper.
 
     Creates a single-axis figure, calls draw_fn(ax), saves and closes it.
-    Returns the saved path. The draw_fn is responsible for ALL axis content
-    including labels, title, legend, etc.
+    Returns the saved path. The draw_fn is responsible for axis content;
+    publication export removes titles and legends.
 
     Default figsize is FIG_WIDE — the safe aspect ratio for trace/curve
     plots, which are the majority of callers. Scatter-shaped panels
@@ -375,7 +381,9 @@ def _save_standalone(draw_fn, path: str, figsize=None) -> str:
         figsize = _style.FIG_WIDE
     fig, ax = plt.subplots(figsize=figsize)
     draw_fn(ax)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if axes_size_inches is not None:
+        _style.fix_axes_size(ax, axes_size_inches)
+    _save_publication_figure(fig, path)
     plt.close(fig)
     return path
 
@@ -396,7 +404,7 @@ def _scatter_figsize(n_cohorts: int) -> tuple:
 def _grouped_scatter_figsize(n_cohorts: int, n_periods: int) -> tuple:
     """Scatter size that also leaves room for rotated period labels."""
     cohort_width, height = _scatter_figsize(n_cohorts)
-    period_width = 4.0 + 2.0 * max(int(n_periods), 1)
+    period_width = 3.0 + 3.0 * max(int(n_periods), 1)
     return (max(cohort_width, period_width), height)
 
 
@@ -550,21 +558,21 @@ def plot_baseline_transients(
         scatter_options=scatter_options,
     )
     path = os.path.join(output_dir, "summary_baseline_transients.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     _save_standalone_scatter(
-        freq, "Transient Frequency\n(Hz)",
+        freq, "Transient\nFrequency\n(Hz)",
         os.path.join(output_dir, "Transient_frequency_baseline.png"),
         scatter_options=scatter_options,
     )
     _save_standalone_scatter(
-        amp, "Transient Amplitude\n(z_ΔF/F)",
+        amp, "Transient\nAmplitude\n(z_ΔF/F)",
         os.path.join(output_dir, "Transient_amplitude_baseline.png"),
         scatter_options=scatter_options,
     )
     _save_standalone_scatter(
-        hw, "Transient Half-width\n(s)",
+        hw, "Transient\nHalf-width\n(s)",
         os.path.join(output_dir, "Transient_halfwidth_baseline.png"),
         scatter_options=scatter_options,
     )
@@ -739,7 +747,7 @@ def plot_preictal_mean(
         ids = [_session_id(s) for s in r.session_results]
         elh[name] = (vals, r.end_late_heat_mean, r.end_late_heat_sem, ids)
     _scatter_mean_sem(
-        axes[2], elh, "End-of-Late-Heat (z_ΔF/F)",
+        axes[2], elh, "End late heat\n(z_ΔF/F)",
         scatter_options=scatter_options, zero_line=True,
     )
 
@@ -749,13 +757,13 @@ def plot_preictal_mean(
         _line_sem(ax, r.temp_bin_centers, r.temp_bin_group_mean,
                   r.temp_bin_group_sem, _color(name), _label(name))
     _style.add_zero_y(ax, ensure_visible=True)
-    ax.set_xlabel("Temp rel. to seizure onset (°C)")
+    ax.set_xlabel("Temp rel. to\nseizure onset (°C)")
     ax.set_ylabel("Mean z_ΔF/F")
     ax.legend()
     ax.spines[["right", "top"]].set_visible(False)
 
     path = os.path.join(output_dir, "summary_preictal_mean.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     # Companion standalone plots that compare heating-phase windows to
@@ -808,7 +816,7 @@ def plot_preictal_mean(
         # we deliberately don't write it here to avoid silent overwrites if
         # the two modules ever drift.
         _save_standalone_scatter(
-            elh, "z_ΔF/F,\nimmediate preictal period",
+            elh, "Immediate preictal\n(z_ΔF/F)",
             os.path.join(output_dir, "Mean_values_immediate_preictal.png"),
             scatter_options=scatter_options,
             zero_line=True,
@@ -916,6 +924,7 @@ def plot_ueo_aligned_heatmaps(
     xlabel: str = "Time rel. to seizure onset (s)",
     dff_label: Optional[str] = None,
     exclude_from_vlim: Optional[List[str]] = None,
+    standard_axes_size_inches: Optional[tuple] = None,
 ) -> Dict[str, str]:
     """UEO-aligned per-session heatmaps, one PNG per cohort.
 
@@ -957,6 +966,9 @@ def plot_ueo_aligned_heatmaps(
     while still rendering them with the resulting color scale. Used when
     one cohort's dynamic range would dominate the others (e.g. the
     Atomoxetine arm of DG_local_release).
+
+    `standard_axes_size_inches` fixes the standard-window data rectangle,
+    leaving label and colorbar space outside it. Extended plots are unchanged.
     """
     if exclude_from_vlim is None:
         exclude_from_vlim = []
@@ -985,6 +997,14 @@ def plot_ueo_aligned_heatmaps(
             (f"{filename_prefix}_heatmap_{cohort_key}.png",
              f"{filename_prefix}_heatmap_{cohort_key}_extended.png"),
         )
+
+    def _xlabel_for(cohort_key: str) -> str:
+        normalized = cohort_key.strip().lower().replace(" ", "_")
+        if (xlabel == "Time rel. to seizure onset (s)"
+                and (normalized.endswith("_no_sz")
+                     or normalized == "no_seizure")):
+            return "Time rel. to event onset (s)"
+        return xlabel
 
     WINDOWS = [
         (-pre_s, post_s, 0),     # standard
@@ -1069,18 +1089,20 @@ def plot_ueo_aligned_heatmaps(
                 interpolation="nearest",
             )
             _style.add_zero_x(ax)
-            ax.set_xlabel(xlabel)
+            ax.set_xlabel(_xlabel_for(cohort_key))
             ax.set_xlim(x_lo, x_hi)
             ax.set_yticks(np.arange(n_sessions))
             ax.set_yticklabels([str(i + 1) for i in range(n_sessions)],
-                               fontsize=24)
+                               fontsize=_style.TICK_SIZE)
             title_prefix = filename_prefix.replace("_", " ")
             cbar_label = dff_label if dff_label else DFF_LABEL
             ax.set_title(f"{title_prefix} {cbar_label} - {_label(cohort_key)}")
             cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
             cbar.set_label(cbar_label)
+            if w_idx == 0 and standard_axes_size_inches is not None:
+                _style.fix_axes_size(ax, standard_axes_size_inches, colorbar=cbar)
             path = os.path.join(output_dir, fname)
-            fig.savefig(path, dpi=150, bbox_inches="tight")
+            _save_publication_figure(fig, path)
             plt.close(fig)
             if w_idx == 0:
                 saved[cohort_key] = path
@@ -1106,7 +1128,7 @@ def _add_nested_period_labels(
                 transform=ax.get_xaxis_transform(),
                 ha="right",
                 va="top",
-                fontsize=28,
+                fontsize=_style.TICK_SIZE,
                 color="dimgray",
                 rotation=45,
                 rotation_mode="anchor",
@@ -1114,7 +1136,7 @@ def _add_nested_period_labels(
             ))
     ax.set_xticks(cohort_centers)
     ax.set_xticklabels(cohort_labels)
-    ax.tick_params(axis="x", which="major", pad=160)
+    ax.tick_params(axis="x", which="major", pad=240)
     return texts
 
 
@@ -1188,7 +1210,7 @@ def _plot_paired_by_cohort(
     ax.set_xlim(-0.6, n_cohorts - 1 + 0.6)
     _style.add_zero_y(ax, ensure_visible=True)
     ax.spines[["right", "top"]].set_visible(False)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close(fig)
 
 
@@ -1224,7 +1246,7 @@ def plot_preictal_transients(
             _line_sem(ax, r.temp_ma_centers,
                       getattr(r, attr_mean), getattr(r, attr_sem),
                       c, _label(name))
-        ax.set_xlabel("Temp rel. to seizure onset (°C)")
+        ax.set_xlabel("Temp rel. to\nseizure onset (°C)")
         ax.set_ylabel(ylabel)
         _style.add_zero_y(ax, ensure_visible=True)
         ax.spines[["right", "top"]].set_visible(False)
@@ -1232,29 +1254,29 @@ def plot_preictal_transients(
 
     fig, axes = plt.subplots(1, 3, figsize=_style.panel_figsize(3))
     _draw_panel(axes[0], "temp_ma_freq_mean", "temp_ma_freq_sem",
-                "Temp moving average -\nFrequency (Hz)")
+                "Moving avg\nfrequency\n(Hz)")
     _draw_panel(axes[1], "temp_ma_amp_mean", "temp_ma_amp_sem",
-                "Temp moving average -\nAmplitude (z_ΔF/F)")
+                "Moving avg\namplitude\n(z_ΔF/F)")
     _draw_panel(axes[2], "temp_ma_hw_mean", "temp_ma_hw_sem",
-                "Temp moving average -\nHalf-width (s)")
+                "Moving avg\nhalf-width\n(s)")
 
     path = os.path.join(output_dir, "summary_preictal_transients.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     _save_standalone(
         lambda ax: _draw_panel(ax, "temp_ma_freq_mean", "temp_ma_freq_sem",
-                               "Frequency (Hz) -\nmoving average vs temp"),
+                               "Moving avg\nfrequency\n(Hz)"),
         os.path.join(output_dir, "Transient_frequency_moving_average_vs_temp_heating.png"),
         figsize=_style.FIG_WIDE)
     _save_standalone(
         lambda ax: _draw_panel(ax, "temp_ma_amp_mean", "temp_ma_amp_sem",
-                               "Amplitude (z_ΔF/F) -\nmoving average vs temp"),
+                               "Moving avg\namplitude\n(z_ΔF/F)"),
         os.path.join(output_dir, "Transient_amplitude_moving_average_vs_temp_heating.png"),
         figsize=_style.FIG_WIDE)
     _save_standalone(
         lambda ax: _draw_panel(ax, "temp_ma_hw_mean", "temp_ma_hw_sem",
-                               "Half-width (s) -\nmoving average vs temp"),
+                               "Moving avg\nhalf-width\n(s)"),
         os.path.join(output_dir, "Transient_halfwidth_moving_average_vs_temp_heating.png"),
         figsize=_style.FIG_WIDE)
 
@@ -1271,6 +1293,7 @@ def plot_ictal_mean(
     landmark_labels: Optional[Dict[str, str]] = None,
     scatter_options: Optional[dict] = None,
     trace_results: Optional[Dict[str, IctalMeanGroupResult]] = None,
+    dff_label: Optional[str] = None,
 ) -> str:
     """Row 18: seizure mean scatter. Row 19: preictal->ictal Δ scatter.
     Row 20: per-landmark triggered averages + AUC scatter.
@@ -1288,6 +1311,12 @@ def plot_ictal_mean(
     results = _ordered(results)
     line_results = _ordered(trace_results or results)
     landmark_labels = landmark_labels or {}
+    signal_label = dff_label or DFF_LABEL
+
+    def _auc_ylabel(positive_only: bool) -> str:
+        if positive_only:
+            return f"AUC above 0\n({signal_label} × s)"
+        return f"AUC\n({signal_label} × s)"
 
     def _lm_display(lm: str) -> str:
         """Display label — override wins, otherwise fall back to the
@@ -1353,17 +1382,17 @@ def plot_ictal_mean(
     # Multi-line ylabels in the combo so adjacent rows' labels don't
     # collide vertically. Standalone exports below keep single-line labels.
     _scatter_mean_sem(
-        axes[0, 0], scalars_seizure, "Seizure-Period Mean\n(z_ΔF/F)",
+        axes[0, 0], scalars_seizure, "Seizure mean\n(z_ΔF/F)",
         scatter_options=scatter_options, zero_line=True,
     )
     _scatter_mean_sem(
         axes[1, 0], scalars_delta_max,
-        "Δ immediate pre-ictal\n→ ictal max (z_ΔF/F)",
+        "Preictal-to-ictal\nΔ max (z_ΔF/F)",
         scatter_options=scatter_options, zero_line=True,
     )
     _scatter_mean_sem(
         axes[2, 0], scalars_delta_min,
-        "Δ immediate pre-ictal\n→ ictal min (z_ΔF/F)",
+        "Preictal-to-ictal\nΔ min (z_ΔF/F)",
         scatter_options=scatter_options, zero_line=True,
     )
     # Hide unused cells in col 0
@@ -1379,6 +1408,8 @@ def plot_ictal_mean(
     # Per-landmark data captured so we can also write standalone files.
     per_lm_auc: Dict[str, Dict[str, tuple]] = {}
     per_lm_window: Dict[str, Optional[float]] = {}
+    per_lm_variable_window: Dict[str, bool] = {}
+    per_lm_positive_only: Dict[str, bool] = {}
 
     def _draw_trace_panel(ax, lm: str, lm_auc_window: Optional[float],
                           show_title: bool = False, legend: bool = True):
@@ -1390,8 +1421,9 @@ def plot_ictal_mean(
         _style.add_zero_x(ax)
         _style.add_zero_y(ax, ensure_visible=True)
         lm_disp = _lm_display(lm)
-        ax.set_xlabel(f"Time rel. to {lm_disp} (s)")
-        ax.set_ylabel(DFF_LABEL)
+        prefix = "Time rel. to\n" if show_title else "Time rel. to "
+        ax.set_xlabel(f"{prefix}{lm_disp} (s)")
+        ax.set_ylabel(signal_label)
         if show_title:
             ax.set_title(lm_disp)
         xlim_hi = max(65.0, (lm_auc_window or 60.0) + 5.0)
@@ -1406,19 +1438,40 @@ def plot_ictal_mean(
 
     for i, lm in enumerate(landmark_names):
         ax = axes[i, 1]
-        lm_auc_window = None
+        lm_auc_windows = []
+        lm_positive_flags = []
         for name, r in line_results.items():
             if lm in r.triggered_averages:
                 ta = r.triggered_averages[lm]
+                lm_positive_flags.append(bool(ta.auc_positive_only))
                 lo = float(np.nanmin(ta.mean_trace - ta.sem_trace))
                 hi = float(np.nanmax(ta.mean_trace + ta.sem_trace))
                 if np.isfinite(lo):
                     trace_lo = min(trace_lo, lo)
                 if np.isfinite(hi):
                     trace_hi = max(trace_hi, hi)
-                if lm_auc_window is None and ta.auc_window_s and not np.isnan(ta.auc_window_s):
-                    lm_auc_window = float(ta.auc_window_s)
+                session_windows = getattr(
+                    ta, "per_session_auc_window_s", None,
+                )
+                if session_windows:
+                    lm_auc_windows.extend(
+                        float(w) for w in session_windows if np.isfinite(w)
+                    )
+                elif ta.auc_window_s and np.isfinite(ta.auc_window_s):
+                    lm_auc_windows.append(float(ta.auc_window_s))
+        lm_variable_window = (
+            len(lm_auc_windows) > 1
+            and not np.allclose(lm_auc_windows, lm_auc_windows[0])
+        )
+        lm_auc_window = max(lm_auc_windows) if lm_auc_windows else None
+        if lm_positive_flags and len(set(lm_positive_flags)) != 1:
+            raise ValueError(
+                f"Landmark {lm} mixes signed and positive-only AUC results."
+            )
+        lm_positive_only = bool(lm_positive_flags[0]) if lm_positive_flags else False
         per_lm_window[lm] = lm_auc_window
+        per_lm_variable_window[lm] = lm_variable_window
+        per_lm_positive_only[lm] = lm_positive_only
         _draw_trace_panel(ax, lm, lm_auc_window,
                           show_title=True, legend=(i == 0))
         trace_axes_for_landmarks.append(ax)
@@ -1444,12 +1497,19 @@ def plot_ictal_mean(
         per_lm_auc[lm] = auc_dict
         if auc_dict:
             _scatter_mean_sem(
-                ax_auc, auc_dict, "AUC",
+                ax_auc, auc_dict, _auc_ylabel(lm_positive_only),
                 scatter_options=scatter_options, zero_line=True,
             )
-            suffix = (f" (0–{lm_auc_window:.0f}s)"
-                      if lm_auc_window else "")
-            ax_auc.set_title(f"AUC - {_lm_display(lm)}{suffix}")
+            if lm_variable_window:
+                window_label = "variable window"
+            else:
+                window_label = (f"0–{lm_auc_window:.0f} s"
+                                if lm_auc_window else "")
+            auc_title = "Positive-only AUC" if lm_positive_only else "AUC"
+            title = f"{auc_title} - {_lm_display(lm)}"
+            if window_label:
+                title += f"\n{window_label}"
+            ax_auc.set_title(title)
         auc_axes_for_landmarks.append(ax_auc)
 
     # Apply matched y-axes across landmark rows (item 15)
@@ -1472,7 +1532,7 @@ def plot_ictal_mean(
         axes[i, 2].axis("off")
 
     path = os.path.join(output_dir, "summary_ictal_mean.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     # Separate standalone plots for the delta_max / delta_min companions, so
@@ -1496,7 +1556,7 @@ def plot_ictal_mean(
     if any_finite_max:
         _save_standalone_scatter(
             scalars_delta_max,
-            "Δ immediate pre-ictal\n→ ictal max (z_ΔF/F)",
+            "Preictal-to-ictal\nΔ max (z_ΔF/F)",
             os.path.join(output_dir, "Mean_delta_immediate_preictal_to_ictal_max.png"),
             scatter_options=scatter_options,
             zero_line=True,
@@ -1504,7 +1564,7 @@ def plot_ictal_mean(
     if any_finite_min:
         _save_standalone_scatter(
             scalars_delta_min,
-            "Δ immediate pre-ictal\n→ ictal min (z_ΔF/F)",
+            "Preictal-to-ictal\nΔ min (z_ΔF/F)",
             os.path.join(output_dir, "Mean_delta_immediate_preictal_to_ictal_min.png"),
             scatter_options=scatter_options,
             zero_line=True,
@@ -1512,7 +1572,7 @@ def plot_ictal_mean(
     # Standalone "Mean_values_ictal.png" mirroring the seizure-mean scalar panel.
     _save_standalone_scatter(
         scalars_seizure,
-        "Mean z_ΔF/F,\nseizure period",
+        "Seizure mean\n(z_ΔF/F)",
         os.path.join(output_dir, "Mean_values_ictal.png"),
         scatter_options=scatter_options,
         zero_line=True,
@@ -1537,11 +1597,18 @@ def plot_ictal_mean(
         # AUC scatter standalone
         auc_dict = per_lm_auc.get(lm)
         if auc_dict:
-            suffix = (f" (0–{lm_auc_window:.0f}s)" if lm_auc_window else "")
+            if per_lm_variable_window.get(lm, False):
+                suffix = " (variable window)"
+            else:
+                suffix = (f" (0–{lm_auc_window:.0f}s)"
+                          if lm_auc_window else "")
             _save_standalone_scatter(
-                auc_dict, "AUC",
+                auc_dict, _auc_ylabel(per_lm_positive_only.get(lm, False)),
                 os.path.join(output_dir, f"AUC_{slug}_scatterplot.png"),
-                title=f"AUC - {_lm_display(lm)}{suffix}",
+                title=(
+                    f"{'Positive-only AUC' if per_lm_positive_only.get(lm, False) else 'AUC'}"
+                    f" - {_lm_display(lm)}{suffix}"
+                ),
                 scatter_options=scatter_options,
                 zero_line=True,
             )
@@ -1551,47 +1618,49 @@ def plot_ictal_mean(
     # write_values_means below). The standalone delta CSVs are dropped:
     # delta_preictal_ictal_max / _min live in values_means too.
 
-    # values_auc_<name_prefix>.csv: one row per session, columns are
-    # `{landmark} AUC ({window}s)` for each landmark present in this
-    # experiment. The window per landmark is constant across rows (it's
-    # the global mean seizure duration except for OFF, which is fixed at
-    # 100 s), so the window appears in the column header rather than as
-    # a separate column. Per-landmark windows are read off triggered_averages.
+    # values_auc_<name_prefix>.csv: one row per session. Fixed integration
+    # windows stay in the AUC column header. Variable windows get an adjacent
+    # per-session duration column so every exported AUC remains auditable.
     landmarks_in_order = [
         lm for lm in landmark_names
         if any(lm in r.triggered_averages
                and r.triggered_averages[lm].per_session_auc
                for r in results.values())
     ]
-    landmark_windows: Dict[str, Optional[float]] = {}
-    for lm in landmarks_in_order:
-        w: Optional[float] = None
-        for r in results.values():
-            ta = r.triggered_averages.get(lm)
-            if ta and ta.auc_window_s and np.isfinite(ta.auc_window_s):
-                w = float(ta.auc_window_s)
-                break
-        landmark_windows[lm] = w
+    landmark_windows = {
+        lm: per_lm_window.get(lm) for lm in landmarks_in_order
+    }
 
-    def _col_label(lm: str, w: Optional[float]) -> str:
+    def _col_label(lm: str, w: Optional[float], variable: bool) -> str:
         # Column header uses the override display label for opto ("Stim on
         # AUC (40s)"), the raw key for hyperthermia ("UEO AUC (10s)").
-        suffix = f" ({w:.0f}s)" if w is not None else ""
         head = landmark_labels.get(lm, lm)
-        return f"{head} AUC{suffix}"
+        auc_text = (
+            "positive-only AUC"
+            if per_lm_positive_only.get(lm, False) else "AUC"
+        )
+        if variable:
+            return f"{head} {auc_text} (variable window)"
+        suffix = f" ({w:.0f}s)" if w is not None else ""
+        return f"{head} {auc_text}{suffix}"
 
     # (cohort, mouse_id, heating_session) -> {landmark: auc}
     auc_by_session: Dict[tuple, Dict[str, float]] = {}
+    auc_window_by_session: Dict[tuple, Dict[str, float]] = {}
     for cohort_name, r in results.items():
         for lm in landmarks_in_order:
             ta = r.triggered_averages.get(lm)
             if ta is None:
                 continue
-            for (mouse_id, h_sess), auc in zip(
-                ta.per_session_meta, ta.per_session_auc
+            session_windows = getattr(
+                ta, "per_session_auc_window_s", None,
+            ) or [ta.auc_window_s] * len(ta.per_session_auc)
+            for (mouse_id, h_sess), auc, window_s in zip(
+                ta.per_session_meta, ta.per_session_auc, session_windows,
             ):
                 key = (cohort_name, mouse_id, h_sess)
                 auc_by_session.setdefault(key, {})[lm] = float(auc)
+                auc_window_by_session.setdefault(key, {})[lm] = float(window_s)
 
     auc_rows = []
     for (cohort_name, mouse_id, h_sess), lm_aucs in sorted(
@@ -1600,15 +1669,25 @@ def plot_ictal_mean(
         row = [cohort_name, mouse_id, h_sess]
         for lm in landmarks_in_order:
             row.append(lm_aucs.get(lm, float("nan")))
+            if per_lm_variable_window.get(lm, False):
+                row.append(
+                    auc_window_by_session.get(
+                        (cohort_name, mouse_id, h_sess), {}
+                    ).get(lm, float("nan"))
+                )
         auc_rows.append(row)
 
     auc_csv_name = (
         f"values_auc_{name_prefix}.csv"
         if name_prefix else "values_auc.csv"
     )
-    auc_header = ["cohort", "mouse_id", "heating_session"] + [
-        _col_label(lm, landmark_windows[lm]) for lm in landmarks_in_order
-    ]
+    auc_header = ["cohort", "mouse_id", "heating_session"]
+    for lm in landmarks_in_order:
+        variable = per_lm_variable_window.get(lm, False)
+        auc_header.append(_col_label(lm, landmark_windows[lm], variable))
+        if variable:
+            head = landmark_labels.get(lm, lm)
+            auc_header.append(f"{head} AUC window (s)")
     _save_csv(os.path.join(output_dir, auc_csv_name), auc_header, auc_rows)
     return path
 
@@ -1667,11 +1746,13 @@ def plot_ictal_transients(
 
     fig, axes = plt.subplots(2, 2, figsize=_style.FIG_2X2)
     _draw_psth(axes[0, 0])
-    _draw_ma(axes[0, 1], "freq_mean", "freq_sem", "Moving average -\nFrequency (Hz)")
-    _draw_ma(axes[1, 0], "amp_mean", "amp_sem", "Moving average -\nAmplitude (z_ΔF/F)")
-    _draw_ma(axes[1, 1], "hw_mean", "hw_sem", "Moving average -\nHalf-width (s)")
+    _draw_ma(axes[0, 1], "freq_mean", "freq_sem", "Moving avg\nfrequency (Hz)")
+    _draw_ma(axes[1, 0], "amp_mean", "amp_sem", "Moving avg\namplitude (z_ΔF/F)")
+    _draw_ma(axes[1, 1], "hw_mean", "hw_sem", "Moving avg\nhalf-width (s)")
+    for ax in axes.flat:
+        ax.set_xlabel("Time rel. to\nseizure onset (s)")
     path = os.path.join(output_dir, "summary_ictal_transients.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     _save_standalone(_draw_psth,
@@ -1725,7 +1806,7 @@ def plot_postictal(
         _line_sem(ax, r.cooling_bin_centers, r.cooling_group_mean, sem, color, _label(name))
     _style.add_zero_y(ax, ensure_visible=True)
     ax.set_xlabel("Temp rel. to max (°C) - cooling →")
-    ax.set_ylabel("Cooling Mean z_ΔF/F")
+    ax.set_ylabel("Cooling mean\n(z_ΔF/F)")
     ax.invert_xaxis()  # 0 on the LEFT, more negative going right (per spec)
     ax.spines[["right", "top"]].set_visible(False)
     _legend_above(ax)
@@ -1779,12 +1860,12 @@ def plot_postictal(
     _draw_scatter_pair(axes[0, 1], "final_times", "final_temps",
                        "Post-Seizure Time (s)", "Final Temp (°C)", legend=False)
     _draw_scatter_pair(axes[1, 0], "final_times", "final_dffs",
-                       "Post-Seizure Time (s)", "Final Mean z_ΔF/F", legend=False)
+                       "Post-Seizure Time (s)", "Final mean\n(z_ΔF/F)", legend=False)
     _draw_scatter_pair(axes[1, 1], "final_temps", "final_dffs",
-                       "Final Temp (°C)", "Final Mean z_ΔF/F", legend=False)
+                       "Final Temp (°C)", "Final mean\n(z_ΔF/F)", legend=False)
 
     path = os.path.join(output_dir, "summary_postictal_mean.png")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close("all")
 
     # Standalone export of the cooling curve so it can be dropped directly
@@ -1802,12 +1883,14 @@ def plot_postictal(
                       color, _label(name))
         _style.add_zero_y(ax_c, ensure_visible=True)
         ax_c.set_xlabel("Temp rel. to max (°C) - cooling →")
-        ax_c.set_ylabel("Cooling Mean z_ΔF/F")
+        ax_c.set_ylabel("Cooling mean\n(z_ΔF/F)")
         ax_c.invert_xaxis()
         ax_c.spines[["right", "top"]].set_visible(False)
         _legend_above(ax_c)
-        fig_c.savefig(os.path.join(output_dir, "Mean_values_vs_temp_cooling.png"),
-                      dpi=150, bbox_inches="tight")
+        _save_publication_figure(
+            fig_c,
+            os.path.join(output_dir, "Mean_values_vs_temp_cooling.png"),
+        )
         plt.close(fig_c)
 
         _save_standalone(
@@ -1816,13 +1899,13 @@ def plot_postictal(
             os.path.join(output_dir, "Final_time_vs_temp.png"))
         _save_standalone(
             lambda ax: _draw_scatter_pair(ax, "final_temps", "final_dffs",
-                                           "Final Temp (°C)", "Final Mean z_ΔF/F"),
+                                           "Final Temp (°C)", "Final mean\n(z_ΔF/F)"),
             os.path.join(output_dir, "Final_temp_vs_mean_signal.png"))
 
     # Final time vs. signal is independent of temperature and always emitted.
     _save_standalone(
         lambda ax: _draw_scatter_pair(ax, "final_times", "final_dffs",
-                                       "Post-Seizure Time (s)", "Final Mean z_ΔF/F"),
+                                       "Post-Seizure Time (s)", "Final mean\n(z_ΔF/F)"),
         os.path.join(output_dir, "Final_time_vs_mean_signal.png"))
 
     # Per-session postictal columns are written by the consolidator into
@@ -1928,7 +2011,7 @@ def plot_experimental_vs_isosbestic_spike_triggered(
         _style.add_zero_x(ax)
         _style.add_zero_y(ax, ensure_visible=True)
         ax.set_xlabel("Time rel. to spike (s)")
-        ax.set_ylabel("Δ raw signal (a.u.)")
+        ax.set_ylabel("Δ raw signal\n(a.u.)")
         ax.set_title(f"{_label(cohort)} (n={n} sessions)")
         # Single-line 48pt title needs ~1.20 to clear the legend.
         _legend_above(ax, y_offset=1.20)
@@ -1952,7 +2035,7 @@ def plot_experimental_vs_isosbestic_spike_triggered(
     path = os.path.join(
         output_dir, "AUC_interictal_spikes_experimental_vs_isosbestic.png"
     )
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    _save_publication_figure(fig, path)
     plt.close(fig)
     return path
 
@@ -1966,6 +2049,7 @@ def plot_spike_triggered(
     name_prefix: str = "",
     scatter_options: Optional[dict] = None,
     trace_results: Optional[Dict[str, SpikeTriggeredGroupResult]] = None,
+    dff_label: Optional[str] = None,
 ) -> str:
     """Spec row 17: interictal ECoG spike-triggered photometry average + AUC.
 
@@ -1978,6 +2062,7 @@ def plot_spike_triggered(
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
     line_results = _ordered(trace_results or results)
+    signal_label = dff_label or DFF_LABEL
 
     csv_rows = []
     for name, r in results.items():
@@ -2001,7 +2086,7 @@ def plot_spike_triggered(
         _style.add_zero_x(ax)
         _style.add_zero_y(ax, ensure_visible=True)
         ax.set_xlabel("Time rel. to spike (s)")
-        ax.set_ylabel(f"Spike-Triggered {DFF_LABEL}")
+        ax.set_ylabel(f"Spike-triggered\n{signal_label}")
         ax.set_xlim(xlim)
         if np.isfinite(ylo) and np.isfinite(yhi) and yhi > ylo:
             ylo = min(ylo, 0.0)
@@ -2024,7 +2109,7 @@ def plot_spike_triggered(
         figsize=_style.FIG_WIDE,
     )
     _save_standalone_scatter(
-        auc_data, "Spike-Triggered AUC",
+        auc_data, f"Spike-Triggered AUC\n({signal_label} × s)",
         os.path.join(output_dir, "AUC_interictal_spikes_scatterplot.png"),
         scatter_options=scatter_options,
         zero_line=True,
@@ -2050,12 +2135,15 @@ def plot_ueo_per_cohort(
     output_dir: str,
     results_extended: Optional[Dict[str, TriggeredAverage]] = None,
     y_lim_override: Optional[tuple] = None,
+    y_ticks_override: Optional[tuple] = None,
     standard_window_s: Optional[tuple] = None,
     xlabel: str = "Time rel. to seizure onset (s)",
     title_suffix: str = "aligned to seizure onset",
     filename_prefix: str = "UEO_aligned",
     dff_label: Optional[str] = None,
     yscale_exclude: Optional[List[str]] = None,
+    trace_colors: Optional[Dict[str, str]] = None,
+    standard_axes_size_inches: Optional[tuple] = None,
 ) -> str:
     """Per-cohort UEO-aligned mean ± SEM trace.
 
@@ -2075,6 +2163,10 @@ def plot_ueo_per_cohort(
     useful when one cohort's signal magnitude would otherwise dwarf
     another's autoscaled axis.
 
+    `y_ticks_override` fixes the y tick locations across every cohort and
+    window. This is used when separately saved matched-condition plots must
+    retain identical labels despite different trace geometry.
+
     `standard_window_s` swaps the default ±150 s standard window. Opto
     pipelines pass (-100, 100) per spec.
 
@@ -2089,6 +2181,9 @@ def plot_ueo_per_cohort(
     auto y-lim, while still rendering them on the resulting axis. Used to
     keep a high-range arm (e.g. Atomoxetine in DG_local_release) from
     dominating the y-axis of the comparison cohorts.
+
+    `standard_axes_size_inches` fixes the standard standalone data rectangle,
+    without changing the summary or extended-window layouts.
 
     Outputs per window:
       summary_<prefix>_traces[_extended].png        (combo, one panel per cohort)
@@ -2108,6 +2203,27 @@ def plot_ueo_per_cohort(
     std_lo, std_hi = standard_window_s if standard_window_s else (-150.0, 150.0)
     yscale_exclude_set = set(yscale_exclude) if yscale_exclude else set()
     y_axis_label = dff_label if dff_label else DFF_LABEL
+
+    def _is_no_seizure(cohort_name: str) -> bool:
+        normalized = cohort_name.strip().lower().replace(" ", "_")
+        return normalized.endswith("_no_sz") or normalized == "no_seizure"
+
+    def _xlabel_for(cohort_name: str) -> str:
+        if (xlabel == "Time rel. to seizure onset (s)"
+                and _is_no_seizure(cohort_name)):
+            return "Time rel. to event onset (s)"
+        return xlabel
+
+    def _combo_xlabel_for(cohort_name: str) -> str:
+        return _xlabel_for(cohort_name).replace(
+            "Time rel. to ", "Time rel. to\n", 1,
+        )
+
+    def _title_suffix_for(cohort_name: str) -> str:
+        if (title_suffix == "aligned to seizure onset"
+                and _is_no_seizure(cohort_name)):
+            return "aligned to event onset"
+        return title_suffix
 
     cohort_fname = {
         "DS_sz": (f"{filename_prefix}_traces_DS_sz.png",
@@ -2166,23 +2282,25 @@ def plot_ueo_per_cohort(
                                  squeeze=False)
         for i, (name, ta) in enumerate(window_results.items()):
             ax = axes[0, i]
-            color = _color(name)
+            color = (trace_colors or {}).get(name, _color(name))
             sem = ta.sem_trace
             ax.plot(ta.time_axis, ta.mean_trace, color=color, label=_label(name))
             ax.fill_between(ta.time_axis, ta.mean_trace - sem,
                             ta.mean_trace + sem, color=color, alpha=0.25)
             _style.add_zero_x(ax)
-            ax.set_xlabel(xlabel)
+            ax.set_xlabel(_combo_xlabel_for(name))
             ax.set_ylabel(y_axis_label)
-            ax.set_title(f"{_label(name)} - {title_suffix}")
+            ax.set_title(f"{_label(name)} - {_title_suffix_for(name)}")
             ax.set_xlim(x_lo, x_hi)
             if final_ylim is not None:
                 ax.set_ylim(*final_ylim)
+            if y_ticks_override is not None:
+                ax.set_yticks(y_ticks_override)
             _style.add_zero_y(ax, ensure_visible=True)
             ax.spines[["right", "top"]].set_visible(False)
 
             combo_path = os.path.join(output_dir, combo_name)
-        fig.savefig(combo_path, dpi=150, bbox_inches="tight")
+        _save_publication_figure(fig, combo_path)
         plt.close(fig)
         if w_idx == 0:
             primary_path = combo_path
@@ -2190,18 +2308,20 @@ def plot_ueo_per_cohort(
         # Per-cohort standalones for this window. No legend - each standalone
         # shows a single line, so the title carries the cohort identity.
         def _draw_single(ax, ta, name, ylim, xl, xh):
-            color = _color(name)
+            color = (trace_colors or {}).get(name, _color(name))
             sem = ta.sem_trace
             ax.plot(ta.time_axis, ta.mean_trace, color=color)
             ax.fill_between(ta.time_axis, ta.mean_trace - sem,
                             ta.mean_trace + sem, color=color, alpha=0.25)
             _style.add_zero_x(ax)
-            ax.set_xlabel(xlabel)
+            ax.set_xlabel(_xlabel_for(name))
             ax.set_ylabel(y_axis_label)
-            ax.set_title(f"{_label(name)} - {title_suffix}")
+            ax.set_title(f"{_label(name)} - {_title_suffix_for(name)}")
             ax.set_xlim(xl, xh)
             if ylim is not None:
                 ax.set_ylim(*ylim)
+            if y_ticks_override is not None:
+                ax.set_yticks(y_ticks_override)
             _style.add_zero_y(ax, ensure_visible=True)
             ax.spines[["right", "top"]].set_visible(False)
 
@@ -2214,6 +2334,7 @@ def plot_ueo_per_cohort(
                     _draw_single(ax, _t, _n, _y, _xl, _xh),
                 os.path.join(output_dir, fname),
                 figsize=_style.FIG_WIDE,
+                axes_size_inches=standard_axes_size_inches if w_idx == 0 else None,
             )
 
     return primary_path or os.path.join(output_dir, WINDOWS[0][2])
@@ -2226,6 +2347,7 @@ def plot_opto_response(
     results,
     output_dir: str,
     scatter_options: Optional[dict] = None,
+    dff_label: Optional[str] = None,
 ) -> Optional[str]:
     """Three standalone scatters: max / min / AUC of the 40 s post-stim window.
 
@@ -2241,6 +2363,7 @@ def plot_opto_response(
         return None
 
     os.makedirs(output_dir, exist_ok=True)
+    signal_label = dff_label or DFF_LABEL
 
     # Short y-labels (two-line) keep the FIG_SCATTER frame from clipping
     # them at 48pt font. The "40 s post-stim" qualifier is part of the
@@ -2248,13 +2371,13 @@ def plot_opto_response(
     # need to repeat it.
     metrics = [
         ("stim_response_max_40s",
-         f"Stim max\n({DFF_LABEL})",
+         f"Stim max\n({signal_label})",
          "Opto_stim_response_max_40s.png"),
         ("stim_response_min_40s",
-         f"Stim min\n({DFF_LABEL})",
+         f"Stim min\n({signal_label})",
          "Opto_stim_response_min_40s.png"),
         ("stim_auc_40s",
-         f"Stim AUC\n({DFF_LABEL}·s)",
+         f"Stim AUC\n({signal_label} × s)",
          "Opto_stim_auc_40s.png"),
     ]
 

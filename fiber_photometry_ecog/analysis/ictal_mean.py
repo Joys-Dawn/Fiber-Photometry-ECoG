@@ -52,6 +52,10 @@ class TriggeredAverage:
     per_session_auc: List[float]    # AUC for each session's triggered trace
     per_session_traces: List[np.ndarray]  # individual session traces
     auc_window_s: float = 0.0   # integration window (0 to this many seconds post-event)
+    # Per-session integration windows, aligned with per_session_auc/meta.
+    # None preserves compatibility with callers that only use one fixed window.
+    per_session_auc_window_s: Optional[List[float]] = None
+    auc_positive_only: bool = False
     # (mouse_id, heating_session) for each per_session_trace, in the same order.
     # Lets downstream plots (heatmaps) keep labels aligned with the trace matrix
     # even when sessions get filtered out (missing landmark, trace boundary).
@@ -231,6 +235,9 @@ def _compute_triggered_average(
     bl_start_s: float,
     bl_end_s: float,
     auc_end_s: float,
+    auc_end_s_by_session: Optional[Dict[tuple, float]] = None,
+    clip_auc_to_available: bool = False,
+    positive_only: bool = False,
     nan_pad: bool = True,
     landmark_name: str = "",
 ) -> TriggeredAverage:
@@ -290,11 +297,14 @@ def _compute_triggered_average(
             per_session_auc=[],
             per_session_traces=[],
             auc_window_s=auc_end_s,
+            per_session_auc_window_s=[],
+            auc_positive_only=positive_only,
             per_session_meta=[],
         )
 
     traces = []
     aucs = []
+    auc_windows = []
     meta = []
 
     for s in valid_sessions:
@@ -328,13 +338,37 @@ def _compute_triggered_average(
             trace = trace - np.mean(bl_window)
         traces.append(trace)
 
-        auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
+        session_key = (s.mouse_id, s.date, s.heating_session)
+        session_auc_end_s = float(
+            (auc_end_s_by_session or {}).get(session_key, auc_end_s)
+        )
+        if not np.isfinite(session_auc_end_s) or session_auc_end_s <= 0:
+            raise ValueError(
+                f"Triggered avg [{landmark_name or '?'}]: session "
+                f"{s.mouse_id} S{s.heating_session} has invalid AUC window "
+                f"{session_auc_end_s}."
+            )
+        requested_auc_samples = int(round(session_auc_end_s * fs))
+        if clip_auc_to_available and nan_pad:
+            finite_post = np.flatnonzero(np.isfinite(trace[pre_samples:]))
+            if finite_post.size:
+                available_auc_samples = int(finite_post[-1])
+                requested_auc_samples = min(
+                    requested_auc_samples, available_auc_samples,
+                )
+                session_auc_end_s = requested_auc_samples / fs
+        auc_end_idx = pre_samples + requested_auc_samples + 1
         auc_window = trace[pre_samples:auc_end_idx]
         if nan_pad and np.any(np.isnan(auc_window)):
             auc = float("nan")
         else:
-            auc = float(np.trapezoid(auc_window, dx=1.0 / fs))
+            integration_values = (
+                np.clip(auc_window, 0.0, None)
+                if positive_only else auc_window
+            )
+            auc = float(np.trapezoid(integration_values, dx=1.0 / fs))
         aucs.append(auc)
+        auc_windows.append(session_auc_end_s)
         meta.append((s.mouse_id, s.heating_session))
 
     trace_mat = np.array(traces)
@@ -359,12 +393,16 @@ def _compute_triggered_average(
     pre_samples = int(round(pre_window_s * fs))
     n_samples = trace_mat.shape[1]
     time_axis = np.linspace(-pre_window_s, post_window_s, n_samples)
-    auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
-    auc_window_mean = mean_trace[pre_samples:auc_end_idx]
-    if nan_pad and np.any(np.isnan(auc_window_mean)):
-        auc_mean = float("nan")
+    if auc_end_s_by_session is not None or positive_only:
+        auc_mean = (float(np.mean(aucs))
+                    if np.all(np.isfinite(aucs)) else float("nan"))
     else:
-        auc_mean = float(np.trapezoid(auc_window_mean, dx=1.0 / fs))
+        auc_end_idx = pre_samples + int(round(auc_end_s * fs)) + 1
+        auc_window_mean = mean_trace[pre_samples:auc_end_idx]
+        if nan_pad and np.any(np.isnan(auc_window_mean)):
+            auc_mean = float("nan")
+        else:
+            auc_mean = float(np.trapezoid(auc_window_mean, dx=1.0 / fs))
 
     return TriggeredAverage(
         time_axis=time_axis,
@@ -374,6 +412,8 @@ def _compute_triggered_average(
         per_session_auc=aucs,
         per_session_traces=traces,
         auc_window_s=auc_end_s,
+        per_session_auc_window_s=auc_windows,
+        auc_positive_only=positive_only,
         per_session_meta=meta,
     )
 
@@ -410,6 +450,9 @@ def compute_ictal_mean(
     auc_end_s: float,
     config: AnalysisConfig | None = None,
     auc_end_s_per_landmark: Optional[Dict[str, float]] = None,
+    auc_end_s_by_session: Optional[Dict[tuple, float]] = None,
+    clip_auc_to_available: bool = False,
+    positive_auc_landmarks: Optional[set[str]] = None,
     extrema_min_duration_s: float | None = None,
 ) -> IctalMeanGroupResult:
     """Compute ictal mean signal metrics for a group of sessions.
@@ -425,6 +468,14 @@ def compute_ictal_mean(
         to an integration window in seconds, overriding the global default for
         that landmark. Also extends the post-event trace window so the full
         AUC interval is visible. Per spec, OFF defaults to 100 s.
+    auc_end_s_by_session : optional mapping from ``(mouse_id, date,
+        heating_session)`` to an individual integration window. It applies
+        to landmarks that do not have a fixed per-landmark override.
+    clip_auc_to_available : when True, a session that ends just before its
+        requested AUC endpoint is integrated through its final sample and the
+        actual shorter window is recorded. Defaults to False.
+    positive_auc_landmarks : optional landmark names whose AUC integrates
+        only values above zero. Negative samples contribute zero area.
     extrema_min_duration_s : optional duration requirement for ictal extrema.
         When omitted, max/min remain sample-wise. When provided, max is the
         highest value sustained at-or-above for this duration and min is the
@@ -437,6 +488,7 @@ def compute_ictal_mean(
     per_lm = dict(FIXED_AUC_WINDOW_S)
     if auc_end_s_per_landmark:
         per_lm.update(auc_end_s_per_landmark)
+    positive_auc_landmarks = set(positive_auc_landmarks or ())
 
     sessions = [s for s in sessions if s.include_for_baseline]
 
@@ -518,13 +570,27 @@ def compute_ictal_mean(
     triggered = {}
     for name, func in landmarks.items():
         auc_end_s = per_lm.get(name, default_auc_end_s)
+        session_auc_windows = (
+            None if name in per_lm else auc_end_s_by_session
+        )
+        max_auc_end_s = auc_end_s
+        if session_auc_windows:
+            max_auc_end_s = max(
+                float(session_auc_windows.get(
+                    (s.mouse_id, s.date, s.heating_session), auc_end_s,
+                ))
+                for s in sessions
+            )
         # Post-window must fit the AUC interval; add a small buffer for plots.
-        post_window_s = max(window_s, auc_end_s + 5.0)
+        post_window_s = max(window_s, max_auc_end_s + 5.0)
         triggered[name] = _compute_triggered_average(
             sessions, func, window_s, post_window_s,
             config.triggered_baseline_start_s,
             config.triggered_baseline_end_s,
             auc_end_s,
+            auc_end_s_by_session=session_auc_windows,
+            clip_auc_to_available=clip_auc_to_available,
+            positive_only=name in positive_auc_landmarks,
             landmark_name=name,
         )
 

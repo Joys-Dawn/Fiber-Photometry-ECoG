@@ -124,6 +124,7 @@ LANDMARK_DISPLAY_LABELS = {
     "ueo": "seizure onset",
     "behavioral_onset": "behavioral onset",
     "off": "seizure offset",
+    "max_temp": "max temp",
 }
 
 

@@ -226,8 +226,8 @@ def test_plot_group_matches_app_aligned_trace_style(tmp_path, monkeypatch):
             for line in ax.lines
             if line.get_label() in {"Green GRAB-NE", "Red NE sensor"}
         }
-        assert ax.get_title() == "DS seizure - aligned to event onset"
-        assert ax.get_xlabel() == "Time rel. to event onset (s)"
+        assert ax.get_title() == ""
+        assert ax.get_xlabel() == "Time rel. to seizure onset (s)"
         assert ax.get_ylabel() == runner.DFF_LABEL
         assert ax.get_xlim() == pytest.approx((-100.0, 100.0))
         assert ax.get_ylim() == pytest.approx((-10.0, 20.0))
@@ -236,6 +236,6 @@ def test_plot_group_matches_app_aligned_trace_style(tmp_path, monkeypatch):
         assert trace_lines["Red NE sensor"].get_color() == "red"
         assert all(line.get_linestyle() == "-" for line in trace_lines.values())
         assert [band.get_alpha() for band in ax.collections] == [0.25, 0.25]
-        assert ax.get_legend().get_frame_on() is False
+        assert ax.get_legend() is None
     finally:
         original_close(figure)

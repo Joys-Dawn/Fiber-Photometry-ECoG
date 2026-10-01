@@ -507,6 +507,7 @@ def _plot_group(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=_style.FIG_WIDE)
 
+    red_color = RED_COLOR
     ax.plot(
         summary.time_axis,
         summary.green_mean,
@@ -523,14 +524,14 @@ def _plot_group(
     ax.plot(
         summary.time_axis,
         summary.red_mean,
-        color=RED_COLOR,
+        color=red_color,
         label=spec.red_label,
     )
     ax.fill_between(
         summary.time_axis,
         summary.red_mean - summary.red_sem,
         summary.red_mean + summary.red_sem,
-        color=RED_COLOR,
+        color=red_color,
         alpha=0.25,
     )
 
@@ -542,12 +543,14 @@ def _plot_group(
             raise ValueError(f"Invalid y-limits: {y_limits}")
         ax.set_ylim(y_lo, y_hi)
     _style.add_zero_y(ax, ensure_visible=True)
-    ax.set_xlabel("Time rel. to event onset (s)")
+    anchor = "seizure onset" if "seizure" in spec.cohort else "event onset"
+    ax.set_xlabel(f"Time rel. to {anchor} (s)")
     ax.set_ylabel(DFF_LABEL)
-    ax.set_title(f"{spec.plot_label} - aligned to event onset")
+    ax.set_title(f"{spec.plot_label} - aligned to {anchor}")
     group_plots._legend_above(ax, ncol=2, y_offset=1.20)
     ax.spines[["top", "right"]].set_visible(False)
 
+    _style.finalize_publication_figure(fig)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path

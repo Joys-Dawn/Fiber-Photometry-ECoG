@@ -399,7 +399,30 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
         # the no-temperature case (PTZ paradigm: temp_smooth is all-NaN);
         # nanmean / nanargmax raise on all-NaN slices.
         lm = session.landmarks
-        bl_end_idx = int(round(lm.heating_start_time * fs))
+        baseline_window_s = lm.baseline_window_s
+        if baseline_window_s is None and lm.heating_start_time is not None:
+            baseline_window_s = (0.0, float(lm.heating_start_time))
+
+        if baseline_window_s is not None:
+            bl_start_idx = max(0, int(baseline_window_s[0] * fs))
+            bl_end_idx = min(
+                len(temp_smooth),
+                int(baseline_window_s[1] * fs),
+            )
+        else:
+            bl_start_idx = 0
+            bl_end_idx = min(
+                len(temp_smooth),
+                int(config.temperature.baseline_duration_s * fs),
+            )
+
+        if bl_end_idx <= bl_start_idx:
+            bl_start_idx = 0
+            bl_end_idx = min(
+                len(temp_smooth),
+                int(config.temperature.baseline_duration_s * fs),
+            )
+
         all_nan_temp = bool(np.all(np.isnan(temp_smooth)))
         if all_nan_temp:
             lm.baseline_temp = float("nan")
@@ -407,7 +430,9 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
             lm.max_temp_time = float("nan")
             lm.terminal_temp = float("nan")
         else:
-            lm.baseline_temp = float(np.nanmean(temp_smooth[:bl_end_idx]))
+            lm.baseline_temp = float(np.nanmean(
+                temp_smooth[bl_start_idx:bl_end_idx]
+            ))
             max_idx = int(np.nanargmax(temp_smooth))
             lm.max_temp = float(temp_smooth[max_idx])
             lm.max_temp_time = max_idx / fs
@@ -563,7 +588,7 @@ def _ensure_spikes(session: Session):
 
 def run_group_analysis(sessions, strategy, ds_key, results_base,
                         stats_name_prefix="",
-                        ueo_y_lim=None, run_stats=False,
+                        ueo_y_lim=None, ueo_y_ticks=None, run_stats=False,
                         ueo_standard_window_s=None,
                         ueo_heatmap_vlim_override=None,
                         ueo_heatmap_diagnostics=None,
@@ -579,16 +604,23 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                         is_opto=False,
                         ueo_filename_prefix="UEO_aligned",
                         ueo_dff_label=None,
+                        ueo_trace_colors=None,
+                        ueo_axes_size_inches=None,
                         ueo_yscale_exclude=None,
                         ueo_heatmap_exclude_from_vlim=None,
                         within_cohort_paired_periods=None,
                         ictal_auc_per_landmark_override=None,
+                        ictal_auc_use_individual_seizure_durations=False,
+                        ictal_auc_clip_to_available=False,
+                        ictal_positive_auc_landmarks=None,
                         ictal_extrema_min_duration_s=None):
     """Run all 8 group analysis modules and generate group plots.
 
     `ueo_y_lim` (tuple of (lo, hi)) hard-clamps the y-axis range on the
     UEO-aligned trace plots so cohorts from different subfolders can be
     compared directly. Pass None for autoscale (default).
+
+    `ueo_y_ticks` optionally fixes the y tick locations on those traces.
 
     `ueo_standard_window_s` / `ueo_xlabel` / `ueo_title_suffix` retitle and
     re-window the per-cohort UEO-aligned trace plots — used by the opto
@@ -637,6 +669,10 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     `ictal_extrema_min_duration_s` optionally replaces sample-wise ictal
     max/min with duration-qualified maximin/minimax values. Dataset runners
     opt in explicitly; the app and all other runners retain sample extrema.
+
+    `ictal_positive_auc_landmarks` optionally names ictal-mean landmarks
+    whose AUC includes only signal above zero. Dataset runners opt in;
+    the app and all other runners retain signed net AUC.
     """
     classifier = cohort_classifier or classify_session
     trace_classifier = trace_cohort_classifier or classifier
@@ -674,9 +710,46 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     # seizure length rather than a fixed window. The helper crashes if no
     # session has both ueo and off set - that's intentional, these analyses
     # are seizure-centric so it should never happen.
-    global_mean_duration = mean_seizure_duration(sessions)
-    log.info("  Mean seizure duration (UEO->OFF) = %.2fs -- "
-             "using as triggered-AUC window", global_mean_duration)
+    auc_end_s_by_session = None
+    if ictal_auc_use_individual_seizure_durations:
+        seizure_durations = [
+            float(s.landmarks.off_time - s.landmarks.ueo_time)
+            for s in sessions
+            if (s.n_seizures > 0
+                and s.landmarks is not None
+                and s.landmarks.ueo_time is not None
+                and s.landmarks.off_time is not None
+                and s.landmarks.off_time > s.landmarks.ueo_time)
+        ]
+        if not seizure_durations:
+            raise ValueError(
+                "Individual seizure-duration AUCs require at least one "
+                "seizure session with valid UEO and OFF landmarks."
+            )
+        global_mean_duration = float(np.mean(seizure_durations))
+        auc_end_s_by_session = {}
+        for session in sessions:
+            lm = session.landmarks
+            if (session.n_seizures > 0
+                    and lm is not None
+                    and lm.ueo_time is not None
+                    and lm.off_time is not None
+                    and lm.off_time > lm.ueo_time):
+                window_s = float(lm.off_time - lm.ueo_time)
+            else:
+                window_s = global_mean_duration
+            auc_end_s_by_session[
+                (session.mouse_id, session.date, session.heating_session)
+            ] = window_s
+        log.info(
+            "  Triggered AUCs use individual seizure durations; "
+            "no-seizure sessions use the %.2fs seizure-group mean",
+            global_mean_duration,
+        )
+    else:
+        global_mean_duration = mean_seizure_duration(sessions)
+        log.info("  Mean seizure duration (UEO->OFF) = %.2fs -- "
+                 "using as triggered-AUC window", global_mean_duration)
 
     # Per-cohort wide UEO triggered average — TWO computations, one per
     # window. Both strict: a session only contributes to a window's mean if
@@ -699,12 +772,15 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     plot_ueo_per_cohort(wide_ueo, means_dir,
                         results_extended=wide_ueo_extended,
                         y_lim_override=ueo_y_lim,
+                        y_ticks_override=ueo_y_ticks,
                         standard_window_s=ueo_standard_window_s,
                         xlabel=ueo_xlabel,
                         title_suffix=ueo_title_suffix,
                         filename_prefix=ueo_filename_prefix,
                         dff_label=ueo_dff_label,
-                        yscale_exclude=ueo_yscale_exclude)
+                        yscale_exclude=ueo_yscale_exclude,
+                        trace_colors=ueo_trace_colors,
+                        standard_axes_size_inches=ueo_axes_size_inches)
     log.info("  Per-cohort UEO triggered: done")
 
     # (analysis_name, compute_fn, plot_fn, destination_dir)
@@ -779,6 +855,9 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                     cohort_sessions, auc_end_s=global_mean_duration,
                     config=config,
                     auc_end_s_per_landmark=per_lm,
+                    auc_end_s_by_session=auc_end_s_by_session,
+                    clip_auc_to_available=ictal_auc_clip_to_available,
+                    positive_auc_landmarks=ictal_positive_auc_landmarks,
                     extrema_min_duration_s=ictal_extrema_min_duration_s,
                 )
             else:
@@ -835,6 +914,8 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
             plot_kwargs["landmark_labels"] = (
                 {"UEO": "Stim on"} if is_opto else None
             )
+        if name in {"Ictal mean", "Spike-triggered averages", "Opto response"}:
+            plot_kwargs["dff_label"] = ueo_dff_label
         plot_fn(results, dest_dir, **plot_kwargs)
         log.info("  Group %s: done", name)
         for cohort_name, group_result in results.items():
@@ -869,6 +950,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
             xlabel=ueo_xlabel,
             dff_label=ueo_dff_label,
             exclude_from_vlim=ueo_heatmap_exclude_from_vlim,
+            standard_axes_size_inches=ueo_axes_size_inches,
         )
         for c, p in paths.items():
             log.info("  UEO heatmap [%s]: %s", c, p)

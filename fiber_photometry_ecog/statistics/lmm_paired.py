@@ -24,8 +24,9 @@ Fallback chain
    pairwise contrast.
 
 2. **When the full LMM fails or is singular** (or R is unavailable):
-   paired t-test on ``(mouse_id, heating_session)`` differences with a
-   loud warning. The pair-only intermediate LMM was removed because
+   paired session-level test on ``(mouse_id, heating_session)`` differences
+   with a loud warning. The shared decision rule selects a paired t-test or
+   Wilcoxon signed-rank test. The pair-only intermediate LMM was removed because
    with 2 obs per ``pair_id`` it collapses algebraically to the paired
    t-test and was failing the singular check for the same reason the
    full LMM did — providing no extra rescue path in practice. Install
@@ -33,7 +34,8 @@ Fallback chain
 
 The PairedTestResult is the unified return type so the runner CSV
 code stays uniform; the ``test_name`` field tells you which path ran:
-``"LMM (Satterthwaite)"``, ``"Paired t-test"``, or ``"None"``.
+``"LMM (Satterthwaite)"``, ``"Paired t-test"``,
+``"Wilcoxon signed-rank"``, or ``"None"``.
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ def _paired_t_on_sessions_fallback(
     df_long: pd.DataFrame, group_a: str, group_b: str,
     reason: str = "R/lmerTest unavailable",
 ) -> PairedTestResult:
-    """Paired t-test on (mouse_id, heating_session) pairs.
+    """Paired session-level test on (mouse_id, heating_session) pairs.
 
     Used both when R is unavailable AND when both LMM fits (full and
     pair-only) degenerate. Pairs are formed on
@@ -65,7 +67,7 @@ def _paired_t_on_sessions_fallback(
     cannot be identified from the data.
     """
     logger.warning(
-        "LMM paired test [%s]: %s. Falling back to paired t-test on "
+        "LMM paired test [%s]: %s. Falling back to a paired test on "
         "(mouse, session) pairs — mouse-level clustering across "
         "sessions is unmodeled.",
         measurement, reason,
@@ -112,9 +114,9 @@ def compare_paired_lmm(
     Returns
     -------
     PairedTestResult. ``test_name`` indicates which path ran:
-    ``"LMM (Satterthwaite)"`` on success, ``"Paired t-test"`` when the
-    LMM fails / is singular or R is unavailable, ``"None"`` for
-    zero-variance differences or too few pairs.
+    ``"LMM (Satterthwaite)"`` on success, ``"Paired t-test"`` or
+    ``"Wilcoxon signed-rank"`` when the LMM fails / is singular or R is
+    unavailable, and ``"None"`` for zero-variance differences or too few pairs.
     """
     df = df_long[df_long["cohort"].isin([group_a, group_b])].copy()
     df["value"] = pd.to_numeric(df["value"], errors="coerce")

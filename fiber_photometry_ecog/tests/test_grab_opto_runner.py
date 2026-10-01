@@ -76,6 +76,14 @@ def test_extract_event_metrics_uses_nonoverlapping_ten_second_windows():
     np.testing.assert_allclose(aucs, [9.9, 19.8])
 
 
+def test_baseline_correct_dff_subtracts_mean_without_scaling():
+    signal = np.array([1.0, 3.0, 5.0, 7.0])
+
+    corrected = runner._baseline_correct_dff(signal, fs=1.0, baseline_end_s=2.0)
+
+    np.testing.assert_allclose(corrected, [-1.0, 1.0, 3.0, 5.0])
+
+
 def test_validate_sessions_requires_one_before_and_after_recording_per_mouse():
     sessions = [
         SimpleNamespace(mouse_id=mouse, cohort=condition)
@@ -105,8 +113,8 @@ def test_mouse_level_frame_averages_technical_replicates_within_mouse():
                         "condition": condition,
                         "condition_label": runner.CONDITION_LABELS[condition],
                         "technical_replicate": train,
-                        "evoked_peak_zdff": value,
-                        "evoked_auc_zdff_s": 2 * value,
+                        "evoked_peak_dff": value,
+                        "evoked_auc_dff_s": 2 * value,
                     }
                 )
 
@@ -117,8 +125,8 @@ def test_mouse_level_frame_averages_technical_replicates_within_mouse():
     first = result.iloc[0]
     assert first["mouse_id"] == runner.EXPECTED_MOUSE_IDS[0]
     assert first["condition"] == runner.BEFORE
-    assert first["evoked_peak_mean_zdff"] == pytest.approx(5.5)
-    assert first["evoked_auc_mean_zdff_s"] == pytest.approx(11.0)
+    assert first["evoked_peak_mean_dff"] == pytest.approx(5.5)
+    assert first["evoked_auc_mean_dff_s"] == pytest.approx(11.0)
 
 
 def test_paired_statistics_uses_five_mouse_means():
@@ -129,8 +137,8 @@ def test_paired_statistics_uses_five_mouse_means():
                 {
                     "mouse_id": mouse,
                     "condition": condition,
-                    "evoked_peak_mean_zdff": index + shift,
-                    "evoked_auc_mean_zdff_s": 2 * index + shift,
+                    "evoked_peak_mean_dff": index + shift,
+                    "evoked_auc_mean_dff_s": 2 * index + shift,
                 }
             )
 
@@ -154,12 +162,12 @@ def test_plot_paired_metric_writes_nonblank_app_styled_png(tmp_path, monkeypatch
                 {
                     "mouse_id": mouse,
                     "condition": runner.BEFORE,
-                    "evoked_peak_mean_zdff": float(index),
+                    "evoked_peak_mean_dff": float(index),
                 },
                 {
                     "mouse_id": mouse,
                     "condition": runner.AFTER,
-                    "evoked_peak_mean_zdff": float(index) / 2,
+                    "evoked_peak_mean_dff": float(index) / 2,
                 },
             ]
         )
@@ -169,7 +177,7 @@ def test_plot_paired_metric_writes_nonblank_app_styled_png(tmp_path, monkeypatch
 
     result = runner._plot_paired_metric(
         pd.DataFrame(rows),
-        "evoked_peak_mean_zdff",
+        "evoked_peak_mean_dff",
         "Evoked peak",
         "Peak",
         output_path,
@@ -186,6 +194,16 @@ def test_plot_paired_metric_writes_nonblank_app_styled_png(tmp_path, monkeypatch
             "Before",
             "After",
         ]
+        assert all(tick.get_rotation() == 45 for tick in ax.get_xticklabels())
         assert ax.get_xlabel() == "Yohimbine"
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        xlabel_box = ax.xaxis.label.get_window_extent(renderer)
+        assert all(
+            not tick.get_window_extent(renderer).overlaps(xlabel_box)
+            for tick in ax.get_xticklabels()
+        )
+        assert ax.get_title() == ""
+        assert ax.get_legend() is None
     finally:
         original_close(figure)

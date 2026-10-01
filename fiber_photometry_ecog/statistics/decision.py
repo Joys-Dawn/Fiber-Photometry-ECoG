@@ -1,13 +1,13 @@
 """
 Parametric vs non-parametric decision rule.
 
-We don't use Shapiro-Wilk: it's overpowered for large N (rejects normality
-for trivial deviations) and underpowered for small N (can't detect non-
-normality). Instead, the rule is shape-based:
+A measurement is treated as non-parametric when any group fails either the
+shape-based thresholds or a Shapiro-Wilk normality test:
 
-1. |skewness| > SKEW_THRESHOLD       -> non-parametric (severe non-normality)
+1. |skewness| > SKEW_THRESHOLD        -> non-parametric
 2. |excess kurtosis| > KURT_THRESHOLD -> non-parametric
-3. otherwise                          -> parametric
+3. Shapiro-Wilk p < SHAPIRO_ALPHA     -> non-parametric
+4. otherwise                           -> parametric
 
 Thresholds follow Curran, West & Finch (1996),
 "The robustness of test statistics to nonnormality and specification error
@@ -21,11 +21,12 @@ non-parametric tests on N alone.
 from typing import List
 
 import numpy as np
-from scipy.stats import skew, kurtosis
+from scipy.stats import kurtosis, shapiro, skew
 
 
 SKEW_THRESHOLD = 2.0
 KURT_THRESHOLD = 7.0
+SHAPIRO_ALPHA = 0.05
 
 
 def should_use_parametric(data_arrays: List[np.ndarray]) -> bool:
@@ -53,6 +54,8 @@ def should_use_parametric(data_arrays: List[np.ndarray]) -> bool:
             if abs(skew(arr)) > SKEW_THRESHOLD:
                 return False
             if abs(kurtosis(arr)) > KURT_THRESHOLD:
+                return False
+            if shapiro(arr).pvalue < SHAPIRO_ALPHA:
                 return False
         except Exception:
             return False

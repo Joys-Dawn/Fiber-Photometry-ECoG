@@ -57,7 +57,10 @@ from fiber_photometry_ecog.statistics import run_paired_comparisons
 from fiber_photometry_ecog.statistics.extractor import extract_all
 from fiber_photometry_ecog.statistics.ratio import gmr_paired_test, pair_arrays
 from fiber_photometry_ecog.visualization import _style
-from fiber_photometry_ecog.visualization.colors import COHORT_DISPLAY_LABELS
+from fiber_photometry_ecog.visualization.colors import (
+    COHORT_DISPLAY_LABELS,
+    DFF_LABEL,
+)
 from fiber_photometry_ecog.visualization.trace_plots import (
     plot_sanity_check_opto,
     plot_zoomed_opto,
@@ -449,13 +452,13 @@ EXPERIMENT_ROOTS = [
     ("Hotspot_GANE/CPP_treatment",    "opto_cpp_treatment",
      ("10HZ_DG", "10HZ_DG_CPP"), False, "ΔF/F",   ()),
     ("Hotspot_GANE/DG_local_release", "opto_dg_local_release",
-     ("1HZ_DG", "20HZ_DG"),      True,  "z-ΔF/F", ()),
+     ("1HZ_DG", "20HZ_DG"),      True,  DFF_LABEL, ()),
     # Atomoxetine arm split out to its own root per Meiling: the raw folder
     # is `DG_local_release _Atomoxetine` (space intentional, matches on disk)
     # and holds only the 20HZ_DG_Atomoxetine cohort. No paired comparison
     # here — solo cohort — so paired_pair is None.
     ("Hotspot_GANE/DG_local_release _Atomoxetine", "opto_dg_local_release_atomoxetine",
-     None,                        True,  "z-ΔF/F", ()),
+     None,                        True,  DFF_LABEL, ()),
 ]
 
 
@@ -636,6 +639,7 @@ def _make_normalized_response_bar(
     ax.set_xlim(-0.6, 0.6)
     ax.spines[["right", "top"]].set_visible(False)
 
+    _style.finalize_publication_figure(fig)
     png_path = output_dir / f"normalized_response_bar_40s_{label}.png"
     fig.savefig(png_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -779,14 +783,23 @@ def run_one_root(experiment_subpath: str, ds_key: str,
             "Postictal", "Spike-triggered averages", "Opto response",
         )
     } if is_cpp_treatment else None
+    if cpp_scatter_modules is not None:
+        cpp_scatter_modules["Baseline transients"] = {"standalone_width": 12.0}
     cohort_module_results = run_group_analysis(
         sessions, STRATEGY, ds_key, results_base,
         stats_name_prefix=label,
-        ueo_y_lim=(-0.1, 0.3) if is_cpp_treatment else None,
+        ueo_y_lim=(-0.1, 0.4) if is_cpp_treatment else None,
+        ueo_y_ticks=(-0.1, 0.0, 0.1, 0.2, 0.3, 0.4)
+        if is_cpp_treatment else None,
         run_stats=False,
-        # Opto stim-aligned trace plot: ±100 s window centered on stim
-        # onset (which is what the UEO landmark holds for opto sessions).
-        ueo_standard_window_s=(-100.0, 100.0),
+        # CPP manuscript panels use ±40 s; other opto traces retain ±100 s.
+        ueo_standard_window_s=(-40.0, 40.0) if is_cpp_treatment else (-100.0, 100.0),
+        ueo_trace_colors={
+            "10HZ_DG": "green", "10HZ_DG_CPP": "green",
+            "1HZ_DG": "green", "20HZ_DG": "green",
+            "20HZ_DG_Atomoxetine": "green", "20HZ_LC": "green",
+            "20HZ_DG_mcherry": "green",
+        },
         ueo_xlabel="Time rel. to stim onset (s)",
         ueo_title_suffix="aligned to stim onset",
         # Opto-mode plot wiring: re-label parameter-detection regions for

@@ -961,7 +961,7 @@ class FiberPhotometryApp:
         self._mark_canvas.draw()
 
     def _landmark_color(self, name: str) -> str:
-        return {"EEC": "orange", "UEO": "red", "Behavioral onset": "purple", "OFF": "blue"}.get(name, "black")
+        return "black"
 
     def _on_ecog_click(self, event) -> None:
         """Handle click on ECoG trace to place a landmark."""
