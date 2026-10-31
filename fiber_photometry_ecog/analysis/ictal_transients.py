@@ -1,9 +1,7 @@
 """
-4.6 Ictal Transients.
+Ictal transient frequency, amplitude, and half-width around UEO/equivalent.
 
-PSTH: transient frequency in 10s bins, ±60s around UEO/equivalent.
-Sliding-window moving averages of transient freq/amp/half-width
-zoomed around UEO.
+PSTH bins and sliding windows are set by AnalysisConfig.
 """
 
 from dataclasses import dataclass
@@ -112,7 +110,7 @@ def compute_ictal_transients(
         all_amp_ma.append(amps)
         all_hw_ma.append(hws)
 
-    # Group PSTH - spec calls for frequency (Hz), so divide counts by bin width
+    # Convert counts per bin to Hz.
     count_mat = np.array(all_counts)
     freq_mat = count_mat / bin_size
     per_session_psth_freq = [freq_mat[i] for i in range(freq_mat.shape[0])]

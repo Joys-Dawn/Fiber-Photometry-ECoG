@@ -35,7 +35,7 @@ class NoIsosbesticStrategy:
         Parameters
         ----------
         signal_470 : experimental fluorescence channel
-        signal_405 : isosbestic channel - IGNORED
+        signal_405 : unused
         fs : sampling rate (Hz)
         config : photometry parameters (uses defaults if None)
 

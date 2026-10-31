@@ -1,9 +1,6 @@
-"""
-4.7 Postictal Recovery.
+"""Postictal cooling curves and terminal recording measurements.
 
-Cooling curve: mean z-ΔF/F vs temperature (relative to seizure onset temp),
-    configurable bins, cooling portion only.
-Final recording metrics: time, temp, mean ΔF/F, and their pairwise relationships.
+Cooling temperatures are relative to each recording's maximum.
 """
 
 from dataclasses import dataclass
@@ -56,7 +53,6 @@ def compute_postictal(
     sessions = [s for s in sessions if s.include_for_baseline]
 
     bin_size = config.temp_bin_size
-    # Bins from -range to 0, relative to seizure onset temp
     bin_edges = np.arange(-config.preictal_temp_range, bin_size, bin_size)
     bin_centers = bin_edges[:-1] + bin_size / 2
 
@@ -70,16 +66,10 @@ def compute_postictal(
         signal, time, fs = get_signal_and_time(s)
         temperature = get_temperature(s)
 
-        # No-temperature paradigm (PTZ): every sample is NaN, so there is
-        # no cooling phase to bin. Emit a NaN row so the group aggregator
-        # still gets a matrix of the right shape, and fall back to the
-        # whole trace for the final-window stats.
         if np.all(np.isnan(temperature)):
             cooling_binned = np.full(len(bin_centers), np.nan)
         else:
-            # Find peak temperature index (start of cooling). nanargmax so
-            # thermistor dropouts (NaN) don't masquerade as the peak - the real
-            # peak still exists in the trace, np.argmax just can't see past NaN.
+    # Cooling starts at the maximum recorded temperature.
             max_idx = int(np.nanargmax(temperature))
             max_temp = float(temperature[max_idx])
 
@@ -87,14 +77,12 @@ def compute_postictal(
             cool_signal = signal[max_idx:]
             cool_temp = temperature[max_idx:]
 
-            # Relative to max temperature (per spec: "temp rel to max")
+            # Temperature relative to the recording maximum.
             cool_temp_rel = cool_temp - max_temp
             cooling_binned = bin_signal_by_temperature(cool_signal, cool_temp_rel, bin_edges)
         all_cooling.append(cooling_binned)
 
-        # Final recording metrics (post-seizure time). off_t may be None for
-        # control sessions with no equivalent OFF in the log - record NaN
-        # for final_time in that case rather than crashing.
+        # Time since offset is NaN when neither actual nor equivalent OFF exists.
         off_t = get_off_time(s)
         final_time = float(time[-1]) - off_t if off_t is not None else np.nan
         valid_temp = temperature[~np.isnan(temperature)]
@@ -119,7 +107,11 @@ def compute_postictal(
 
     # Group cooling curve
     cool_mat = np.array(all_cooling)
-    cool_mean = np.nanmean(cool_mat, axis=0)
+    cool_counts = np.sum(~np.isnan(cool_mat), axis=0)
+    cool_mean = np.divide(
+        np.nansum(cool_mat, axis=0), cool_counts,
+        out=np.full(len(bin_centers), np.nan), where=cool_counts > 0,
+    )
     cool_sem = np.full(len(bin_centers), np.nan)
     for b in range(len(bin_centers)):
         col = cool_mat[:, b]

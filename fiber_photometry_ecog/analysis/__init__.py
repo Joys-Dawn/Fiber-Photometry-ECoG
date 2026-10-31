@@ -1,10 +1,4 @@
-"""
-Phase 4: Analysis modules.
-
-Each module computes a specific set of metrics per the Excel spec.
-All analyzers receive Session objects and an AnalysisConfig and return
-dataclass result containers.
-"""
+"""Session and cohort analysis."""
 
 from .cohort_characteristics import compute_cohort_characteristics as compute_cohort_characteristics
 from .baseline_transients import compute_baseline_transients as compute_baseline_transients

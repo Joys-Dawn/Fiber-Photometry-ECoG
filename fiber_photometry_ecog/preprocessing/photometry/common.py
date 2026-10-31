@@ -1,7 +1,7 @@
 """
 Shared photometry utilities used across strategies.
 
-- Biexponential fitting (photobleaching correction for strategy B)
+- Biexponential photobleaching correction
 - z-scoring relative to baseline
 - High-pass filter for transient detection stream
 """
@@ -37,21 +37,7 @@ def fit_biexponential(
     signal: np.ndarray,
     fs: float,
 ) -> np.ndarray:
-    """Fit a biexponential photobleaching curve (Meiling's exact recipe).
-
-    Parameters
-    ----------
-    signal : 1-D fluorescence signal
-    fs : sampling rate (Hz)
-
-    Returns
-    -------
-    Fitted bleaching curve (same length as input).
-
-    Raises
-    ------
-    RuntimeError if the fit does not converge.
-    """
+    """Fit a biexponential photobleaching curve; fs is in Hz."""
     n = len(signal)
     t = np.arange(n) / fs
 
@@ -133,27 +119,7 @@ def z_score_baseline(
 
 
 def null_z(signal: np.ndarray) -> np.ndarray:
-    """Null-Z normalization: signal / sqrt(mean(signal^2)).
-
-    The Keevers IRLS dF/F is already centered on the IRLS-derived
-    baseline of zero, so "z-score relative to zero" only needs a scale
-    estimate, not a centering step. Keevers et al. (Neurophotonics 2025)
-    recommend this over standard baseline-window z-scoring because the
-    latter "reverts the signal mean to 0 (as per OLS), which may not
-    reflect the IRLS-derived baseline."
-
-    Reference implementation: github.com/philjrdb/RegressionSim/nullZ.m
-        function nullZ_data = nullZ(data)
-        nullZ_data = data ./ sqrt(mean(data.^2));
-
-    Using mean (not sum) of squared deviations keeps the scale
-    length-invariant, so longer recordings don't produce systematically
-    smaller normalized values than shorter ones.
-
-    NaNs in the input propagate through (`np.nanmean` only affects the
-    scale estimate; positions of NaN in the output match the input).
-    Returns an all-NaN array if the scale is zero or undefined.
-    """
+    """Divide finite samples by their RMS; return NaNs if the RMS is undefined or zero."""
     finite = np.isfinite(signal)
     if not finite.any():
         return np.full_like(signal, np.nan, dtype=np.float64)
@@ -166,7 +132,7 @@ def null_z(signal: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# High-pass filter for transient detection (Strategy A, per Chandni's code)
+# High-pass filter for transient detection (Strategy A)
 # ---------------------------------------------------------------------------
 
 def highpass_filter(
@@ -175,22 +141,7 @@ def highpass_filter(
     cutoff: float = 0.01,
     order: int = 2,
 ) -> np.ndarray:
-    """Zero-phase Butterworth high-pass filter.
-
-    Used by Strategy A (Chandni's original pipeline). Chandni's
-    detect_transients.m operates on zdff_hpf (z-scored HPF dF/F).
-
-    Parameters
-    ----------
-    signal : 1-D signal
-    fs : sampling rate (Hz)
-    cutoff : cutoff frequency (Hz)
-    order : filter order
-
-    Returns
-    -------
-    High-pass filtered signal.
-    """
+    """Apply a zero-phase Butterworth high-pass filter; fs and cutoff are in Hz."""
     sos = butter(order, cutoff, btype="highpass", fs=fs, output="sos")
     return sosfiltfilt(sos, signal)
 
@@ -204,23 +155,7 @@ def detrend_moving_average(
     fs: float,
     window_s: float = 100.0,
 ) -> np.ndarray:
-    """Detrend by subtracting a moving average, per Wallace et al. 2025.
-
-    Wallace 2025: "adjusted for bleaching, drift, and motion artifacts
-    through normalization by detrending the 465-nm-excited signal and
-    subtracting a moving average smoothed (width=100 s) version of the
-    signal."
-
-    Parameters
-    ----------
-    signal : 1-D signal (dF/F)
-    fs : sampling rate (Hz)
-    window_s : moving average window in seconds (default 100s per Wallace)
-
-    Returns
-    -------
-    Detrended signal (signal - moving_average).
-    """
+    """Subtract an edge-padded moving average with a window_s-second window."""
     window_samples = int(window_s * fs)
     if window_samples < 1:
         window_samples = 1

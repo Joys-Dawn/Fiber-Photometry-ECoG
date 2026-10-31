@@ -2,7 +2,7 @@
 End-to-end integration test of the full pipeline.
 
 Uses real Chandni data: one session per cohort.
-Tests: load → sync → preprocess (all 3 strategies) → pair → analyze → plot.
+Tests: load -> sync -> preprocess (A/B/C) -> pair -> analyze -> plot.
 """
 import logging
 import shutil
@@ -48,12 +48,10 @@ from fiber_photometry_ecog.visualization import (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# Resolve repo root (two levels up from this file: tests/ -> fiber_photometry_ecog/ -> repo root)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # --- Test sessions (one per cohort) ---
-# Landmark times are approximate - real values would come from user marking on GUI.
-# These are plausible for a ~15-20 min heating experiment with seizure around 42°C.
+# Test landmark times are approximate, not manually scored.
 _DATA = _REPO_ROOT / "Chandni_data"
 
 TEST_SESSIONS = [

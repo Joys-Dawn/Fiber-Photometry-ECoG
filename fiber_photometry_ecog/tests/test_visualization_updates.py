@@ -54,7 +54,7 @@ from fiber_photometry_ecog.visualization.trace_plots import (
     plot_baseline,
     plot_zoomed,
 )
-from run_hyperthermia import (
+from LC_paper.run_hyperthermia import (
     DG_POSITIVE_ONLY_AUC_LANDMARKS,
     ICTAL_EXTREMA_MIN_DURATION_S,
     INDIVIDUAL_SEIZURE_AUC_SUBFOLDERS,
@@ -64,7 +64,7 @@ from run_hyperthermia import (
     _seizure_outcome_classifier,
     _source_point_colors,
 )
-import run_threshold_sweep as sweep
+from LC_paper import run_threshold_sweep as sweep
 import fiber_photometry_ecog.visualization.group_plots as group_plots
 
 

@@ -1,8 +1,6 @@
 """Standalone repeated-train GRAB-NE optogenetics analysis.
 
-This runner is intentionally dataset-specific. It analyzes
-``D:/Ephys_Data/OPTO_stim/GRAB_opto`` without adding repeated-train behavior
-to the GUI pipeline.
+Analyzes the GRAB_opto repeated-stimulation dataset, independently of the GUI.
 
 Protocol encoded here:
 * Channel 23 contains 1 s trains of 20 pulses at 20 Hz.
@@ -38,7 +36,7 @@ from fiber_photometry_ecog.preprocessing.stim_detection import (
 from fiber_photometry_ecog.statistics.paired import compare_paired
 from fiber_photometry_ecog.visualization import _style
 from fiber_photometry_ecog.visualization.group_plots import _legend_above
-from run_threshold_sweep import load_sessions
+from LC_paper.run_threshold_sweep import load_sessions
 
 
 logging.basicConfig(
@@ -51,11 +49,11 @@ log = logging.getLogger(__name__)
 
 DATA_ROOT = Path("D:/Ephys_Data/OPTO_stim/GRAB_opto")
 OUTPUT_ROOT = (
-    Path("results")
+    Path(__file__).resolve().parent / "results"
     / "results_GRAB_opto_repeated"
     / "preprocessing_IRLS"
 )
-CACHE_ROOT = Path("opto_cache") / "GRAB_opto_repeated" / "C"
+CACHE_ROOT = Path(__file__).resolve().parent / "opto_cache" / "GRAB_opto_repeated" / "C"
 
 BEFORE = "before_Yohimbine"
 AFTER = "after_Yohimbine"

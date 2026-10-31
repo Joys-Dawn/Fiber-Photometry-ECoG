@@ -126,8 +126,7 @@ def scan_experiment_folder(experiment_dir: str) -> List[Dict]:
         e.g. DG_GRABneMutant/3681het/...
     Here the cohort layer is absent on disk; cohort metadata is expected to
     come from the data log. As a fallback, the mouse-folder name is used as
-    the cohort tag so downstream genotype inference (`wt` substring) still
-    works for the flat case.
+    the cohort tag for genotype inference.
 
     Each session_dir may contain one or more recordings (multiple dated OEP
     folders + matching PPD files). When more than one recording is present,
@@ -274,9 +273,9 @@ def _genotype_from_cohort(cohort: str) -> str:
 
 
 def read_data_log(experiment_dir: str) -> Optional[dict]:
-    """Find and read the Excel data log. Matches the spec log schema.
+    """Find and read the Excel data log.
 
-    Spec columns (recognized case-insensitively, partial-match):
+    Recognized columns (case-insensitive, partial-match):
       - cohort, date, mouse ID #, heating session #
       - seizure?, SUDEP?
       - channel(s): ECoG / EMG / temperature
@@ -286,7 +285,7 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
       - EEC/UEO/OFF (1st/last seizure) - time
 
     Also tolerates Chandni's custom columns (mouse, genotype=H/W, fatal,
-    exclude, heatStart) for backward compatibility.
+    exclude, heatStart).
 
     Returns dict keyed by (mouse_id_str, date_str) → row dict.
     """
@@ -297,11 +296,7 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
     log_path = xlsx_files[0]
     logger.info("Reading data log: %s", log_path.name)
 
-    # Some opto logs (CPP_treatment, DG_local_release) split per-cohort
-    # metadata across multiple sheets — one sheet per cohort. Read every
-    # sheet and concatenate; without this, only the first sheet's mice
-    # get matched, and sessions on disk under other cohort folders fail
-    # the loader's stim_channel / heating_start check.
+    # Read all worksheets because cohort metadata may span multiple sheets.
     import openpyxl
     wb = openpyxl.load_workbook(log_path, read_only=True)
     sheet_names = wb.sheetnames
@@ -321,9 +316,7 @@ def read_data_log(experiment_dir: str) -> Optional[dict]:
         df_sheet.columns = [str(c).strip() for c in df_sheet.columns]
         per_sheet.append(df_sheet)
 
-    # Outer-concat: sheets with extra columns (e.g. genotype only on one
-    # sheet) keep those columns; missing entries become NaN, which the
-    # downstream per-column parsers already treat as "absent".
+    # Retain sheet-specific columns; missing entries become NaN.
     df = pd.concat(per_sheet, ignore_index=True, sort=False) if per_sheet else pd.DataFrame()
     df.columns = [str(c).strip() for c in df.columns]
 

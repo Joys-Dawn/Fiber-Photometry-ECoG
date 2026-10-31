@@ -109,10 +109,6 @@ def compare_paired(
         )
 
     differences = b - a
-    # Zero-variance differences (constant response, all-equal differences, or
-    # all-zero differences) produce NaN from ttest_rel and an exception from
-    # wilcoxon. Both cases carry zero information about the contrast; surface
-    # them as "None" rather than a "Paired t-test" row with blank cells.
     if float(np.std(differences)) == 0.0:
         return PairedTestResult(
             measurement=measurement,

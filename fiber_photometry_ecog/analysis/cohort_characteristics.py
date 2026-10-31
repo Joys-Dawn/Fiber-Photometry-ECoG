@@ -1,5 +1,5 @@
 """
-4.1 Cohort Characteristics.
+Cohort characteristics.
 
 Per session: baseline temperature, seizure threshold (temperature at UEO),
 seizure duration (OFF − UEO). Group means ± SEM.
@@ -78,10 +78,9 @@ def compute_cohort_characteristics(
         if duration is not None:
             durations.append(duration)
 
-    # All-or-none-or-crash: any asymmetric availability within a cohort is
-    # a bug. Either every session in the cohort has the metric (e.g. temp
-    # for hyperthermia, duration for seized cohorts) or none does (e.g.
-    # temp for PTZ/opto, duration for control-only cohorts).
+    # Require each metric to be available for all or none of the cohort's
+    # sessions. Mixed availability raises an error rather than excluding
+    # individual sessions from that metric.
     def _assert_uniform(name: str, present: list):
         n_total = len(sessions)
         n_present = len(present)

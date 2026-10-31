@@ -59,7 +59,7 @@ def get_ueo_temp(s: Session) -> Optional[float]:
 
 
 def get_signal_and_time(s: Session) -> tuple[np.ndarray, np.ndarray, float]:
-    """Return (z-scored dF/F, time, fs) from a session's processed data."""
+    """Return (analysis signal, time, fs) from the processed session."""
     proc = s.processed
     return proc.photometry.dff_zscore, proc.time, proc.fs
 

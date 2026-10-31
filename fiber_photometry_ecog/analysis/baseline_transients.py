@@ -1,5 +1,5 @@
 """
-4.2 Baseline / Interictal Transients.
+Baseline transient summaries.
 
 Filter transients to baseline period (start → heating onset).
 Compute: frequency (count / duration), mean amplitude, mean half-width.

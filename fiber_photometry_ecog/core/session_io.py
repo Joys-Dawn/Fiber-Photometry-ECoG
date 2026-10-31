@@ -8,8 +8,6 @@ preprocessing results can coexist for the same sessions.
 Each file contains all arrays (raw + processed) and a JSON string with
 scalar metadata, landmarks, transients, spikes, and preprocessing config.
 
-This keeps the results directory clean - .sessions/ is internal state,
-results/ is user-facing output.
 """
 
 import json
@@ -159,9 +157,7 @@ def load_session(path: Path) -> Session:
     data = np.load(path)
     meta = json.loads(str(data["_metadata_json"]))
 
-    # Reconstruct raw. temp_slope/temp_intercept default to Physitemp constants
-    # for backward compatibility with older cached sessions that predate the
-    # per-session calibration fields.
+    # Missing calibration fields use the Physitemp defaults.
     raw = RawData(
         signal_470=data["raw_signal_470"],
         signal_405=data["raw_signal_405"],
@@ -284,7 +280,7 @@ def find_saved_sessions(experiment_dir: str, strategy: Optional[str] = None) -> 
     ----------
     experiment_dir : root experiment folder
     strategy : if provided, look only in that strategy's subfolder.
-               If None, look in base .sessions/ for backward compat.
+               If None, look in base .sessions/.
 
     Returns
     -------

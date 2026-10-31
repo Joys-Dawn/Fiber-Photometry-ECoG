@@ -6,9 +6,7 @@ from typing import Dict, List, Optional
 from ..visualization.colors import COHORT_DISPLAY_LABELS
 
 
-# Default mapping from internal cohort keys to publication display names.
-# Single source of truth is `visualization.colors.COHORT_DISPLAY_LABELS` -
-# re-exported here so stats users don't have to import from visualization.
+# Default cohort labels shared with plots.
 DEFAULT_DISPLAY_NAMES: Dict[str, str] = dict(COHORT_DISPLAY_LABELS)
 
 
@@ -26,7 +24,7 @@ class StatsConfig:
         plots and CSV column headers. Falls back to DEFAULT_DISPLAY_NAMES.
     alpha : significance threshold for annotation purposes.
 
-    NOTE: multiple-comparison correction is intentionally omitted.
+    P-values are not adjusted for multiple comparisons.
     """
 
     cohorts_to_compare: List[str] = field(
@@ -45,12 +43,12 @@ class StatsConfig:
 class PairedStatsConfig:
     """Configuration for within-subject (LMM-based) comparisons.
 
-    The model is always ``value ~ cohort + (1|mouse_id)`` fit by REML on
-    one row per session. When the LMM is singular or fails to converge,
-    falls back to an INDEPENDENT-groups test on session-level data
-    (Welch's t / Mann-Whitney U) with a loud warning. Per-mouse averaging
-    is never performed — it would discard the repeats for mice that
-    contributed more than one session per cohort.
+    The model is ``value ~ cohort + (1|mouse_id) + (1|pair_id)``, fit by
+    REML with one observation per session and condition. If R is unavailable
+    or the model fit fails, is singular, or does not converge, a warning is
+    issued and a paired t-test or Wilcoxon signed-rank test is used on matched
+    session pairs. The fallback does not model within-mouse correlation
+    across sessions. Observations are not averaged per mouse.
 
     Attributes
     ----------

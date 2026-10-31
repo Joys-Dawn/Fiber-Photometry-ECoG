@@ -45,14 +45,7 @@ def filter_ecog(
     b_notch, a_notch = iirnotch(config.notch_freq, config.notch_q, fs=fs)
     sos_notch = tf2sos(b_notch, a_notch)
 
-    # Opto sessions NaN-pad ECoG outside the OEP overlap (sync.py extends
-    # the timebase to cover the full PPD photometry span). sosfiltfilt is
-    # an IIR + reverse pass, so a single NaN propagates through the entire
-    # output and we end up with an all-NaN trace. Filter the contiguous
-    # valid segment only and write the result back into a NaN-padded
-    # full-length array. Assumes any NaN padding is at the edges of the
-    # array, not in the middle — true for the opto extend path; would
-    # need a multi-segment loop if interior gaps ever appear.
+    # Filter only the valid segment to avoid propagating NaN padding.
     finite = np.isfinite(ecog)
     if finite.all():
         filtered = sosfiltfilt(sos_bp, ecog)
@@ -65,8 +58,7 @@ def filter_ecog(
     lo, hi = int(valid_idx[0]), int(valid_idx[-1]) + 1
     segment = ecog[lo:hi]
     if not np.isfinite(segment).all():
-        # Interior NaN — bail rather than emit a half-filtered trace that
-        # downstream code can't reason about.
+        # Reject traces with interior non-finite samples.
         return np.full_like(ecog, np.nan, dtype=np.float64)
 
     seg_filt = sosfiltfilt(sos_bp, segment)

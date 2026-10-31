@@ -5,8 +5,6 @@ Strategy A - Chandni's photometry preprocessing.
    via filtfilt with Gaussian kernel (zero-phase, applied forward+backward)
 2. dF/F = (smoothed_470 - smoothed_405) / smoothed_405
 
-Simple approach: no explicit photobleaching model or motion regression.
-Gaussian acts as low-pass; isosbestic subtraction handles shared noise.
 """
 
 import numpy as np
@@ -41,7 +39,7 @@ class ChandniStrategy:
         """Apply Chandni's Gaussian smoothing + simple dF/F.
 
         Uses filtfilt with a Gaussian kernel for zero-phase smoothing
-        (forward + backward pass), per spec.
+        (forward and backward passes).
 
         Parameters
         ----------
@@ -68,7 +66,6 @@ class ChandniStrategy:
         return PhotometryResult(dff=dff)
 
 
-# Module-level convenience for backward compatibility
 def preprocess_chandni(
     signal_470: np.ndarray,
     signal_405: np.ndarray,

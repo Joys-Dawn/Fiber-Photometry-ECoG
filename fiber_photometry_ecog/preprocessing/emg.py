@@ -1,13 +1,4 @@
-"""
-EMG preprocessing.
-
-EMG is already aligned to the ECoG timebase after sync (same continuous.dat
-stream, same sample clock). This module is a placeholder for future EMG
-preprocessing steps as defined by the analysis spec.
-
-Current scope: store aligned EMG in session data. Additional filtering
-and analysis TBD per Excel spec.
-"""
+"""EMG passthrough after synchronization to the ECoG timebase."""
 
 import numpy as np
 

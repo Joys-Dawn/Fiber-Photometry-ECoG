@@ -1,7 +1,7 @@
 """
-Tests for Phase 2: Preprocessing Pipeline.
+Tests for the preprocessing pipeline.
 
-Tests ECoG filtering, all three photometry strategies, transient detection,
+Tests ECoG filtering, photometry strategies A-D, transient detection,
 temperature processing, shared utilities, and Protocol compliance.
 """
 
@@ -216,7 +216,7 @@ class TestBiexponentialFit:
         assert np.std(residuals) < 0.05
 
     def test_fit_output_is_finite_and_bounded(self):
-        """Fitted biexponential must not contain inf, nan, or wild values."""
+        """The fitted curve is finite and within the asserted bounds."""
         fs = 20.0
         n = int(fs * 2000)
         t = np.arange(n) / fs
@@ -464,12 +464,7 @@ class TestStrategyC:
         np.testing.assert_array_equal(result_fn.dff, result_cls.dff)
 
     def test_removes_shared_motion(self):
-        """IRLS should correct shared motion + bleaching artifacts.
-
-        Per Keevers 2025: no biexp detrending. The regression captures
-        both bleaching and motion directly. When both channels are
-        identical, fitted_iso ≈ filt_470, so dF/F ≈ 0.
-        """
+        """Identical channels produce near-zero IRLS dF/F."""
         np.random.seed(42)
         fs = 130.0
         n = int(fs * 300)
@@ -498,13 +493,9 @@ class TestStrategyC:
         )
 
     def test_irls_regression_downweights_transients(self):
-        """IRLS regression slope should be less biased by transients.
+        """IRLS recovers a slope closer to 1.0 than OLS for this signal.
 
-        Setup: iso has a slow oscillation (shared motion). Signal = iso
-        with true slope 1.0 + transients placed at iso peaks. OLS
-        interprets the transient-at-peak correlation as higher slope.
-        IRLS should downweight those outliers and recover slope closer
-        to the true 1.0.
+        Added transients coincide with peaks of the shared oscillation.
         """
         from fiber_photometry_ecog.preprocessing.photometry.strategy_c_irls import (
             _irls_regression,
@@ -520,11 +511,9 @@ class TestStrategyC:
         # True coupling: slope=1.0
         sig = iso.copy() + 0.005 * np.random.randn(n)
 
-        # Add LARGE transients at iso PEAKS (where iso is maximal)
+        # Transients coincide with isosbestic peaks.
         # sin(2*pi*0.05*t) peaks at t = 5, 25, 45, 65, ...
         # (period = 20s, peak at t = period/4 + k*period)
-        # This creates strong positive outliers correlated with high iso,
-        # biasing OLS slope upward
         peak_times = [5.0, 25.0, 45.0, 65.0, 85.0, 105.0, 125.0,
                       145.0, 165.0, 185.0, 205.0, 225.0, 245.0,
                       265.0, 285.0, 305.0, 325.0, 345.0, 365.0, 385.0]
@@ -546,18 +535,10 @@ class TestStrategyC:
         assert abs(irls_slope - 1.0) < abs(ols_slope - 1.0)
 
     def test_no_biexp_detrending(self):
-        """Strategy C per Keevers 2025 does NOT biexp-detrend.
-
-        The fitted_iso retains original signal scale (including bleaching),
-        so dF/F normalizes for bleaching via the division. This means
-        dF/F values are small (signal ≈ fitted_iso for shared components).
-        """
+        """IRLS retains the fitted control's scale when computing dF/F."""
         np.random.seed(42)
         s470, s405, _ = make_photometry_pair(duration=300.0)
         result = preprocess_irls(s470, s405, 130.0)
-        # dF/F should be small when signals are similar - fitted_iso
-        # is on the same scale as filt_470 (both ~1-3 range), so
-        # (filt_470 - fitted_iso) / fitted_iso should be near 0
         assert np.mean(np.abs(result.dff)) < 0.5
 
 

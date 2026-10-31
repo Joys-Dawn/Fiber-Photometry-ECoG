@@ -17,19 +17,11 @@ from .config import PreprocessingConfig
 @dataclass
 class SessionLandmarks:
     """Temporal and temperature landmarks for a recording session."""
-    # Time at which the experimental phase begins (heating onset for hyperthermia,
-    # auto-set to stim onset for opto). Acts as the baseline-end marker for
-    # z-scoring, spike-detection statistics, and pre/post-ictal windowing.
-    # Required for hyperthermia (read from the data log); for opto it is
-    # auto-populated by stim detection during preprocess_session.
+    # Baseline endpoint, usually heating onset.
     heating_start_time: Optional[float] = None  # seconds from recording start
-    # End of the window used to z-score the photometry signal and to compute
-    # spike-detection noise stats. Decoupled from heating_start_time so opto
-    # sessions (which auto-set heating_start_time = stim_onset for analysis
-    # window math) can use a fixed pre-stim window for normalization
-    # consistency across sessions. If None, falls back to heating_start_time.
+    # Normalization endpoint; None falls back to heating_start_time.
     zscore_baseline_end_time: Optional[float] = None  # seconds from recording start
-    eec_time: Optional[float] = None        # electrographic event criterion (None for controls)
+    eec_time: Optional[float] = None        # earliest electrographic change (None for controls)
     ueo_time: Optional[float] = None        # unequivocal electrographic onset
     behavioral_onset_time: Optional[float] = None
     off_time: Optional[float] = None        # seizure offset
@@ -55,16 +47,16 @@ class SessionLandmarks:
 
 @dataclass
 class TransientEvent:
-    """A single detected calcium transient."""
+    """A detected photometry transient."""
     peak_time: float                        # seconds
-    peak_amplitude: float                   # raw dF/F (NOT z-scored)
+    peak_amplitude: float                   # fractional dF/F detection stream
     trough_amplitude: float                 # minimum in window around peak
     peak_to_trough: float                   # peak - trough
     half_width: float                       # seconds, at 50% prominence
     prominence: float                       # scipy prominence value
     temperature_at_peak: Optional[float] = None  # degrees C, cross-referenced
-    z_peak_amplitude: Optional[float] = None     # z-scored HPF signal at peak
-    z_trough_amplitude: Optional[float] = None   # z-scored HPF min in trough window
+    z_peak_amplitude: Optional[float] = None     # z-scored detection signal at peak
+    z_trough_amplitude: Optional[float] = None   # z-scored detection signal minimum
     z_peak_to_trough: Optional[float] = None     # z_peak - z_trough
 
 
@@ -100,8 +92,8 @@ class RawData:
 class PhotometryResult:
     """Output of a photometry preprocessing strategy."""
     dff: np.ndarray                         # dF/F signal
-    dff_zscore: Optional[np.ndarray] = None # z-scored dF/F (relative to baseline)
-    dff_hpf: Optional[np.ndarray] = None    # high-pass filtered dF/F (for transient detection)
+    dff_zscore: Optional[np.ndarray] = None # analysis signal; baseline z-scored unless disabled
+    dff_hpf: Optional[np.ndarray] = None    # transient detection signal; optional detrending
 
 
 @dataclass
@@ -119,7 +111,7 @@ class ProcessedData:
 class Session:
     """Complete data container for one recording session."""
     mouse_id: str
-    genotype: str                           # "Scn1a" | "WT"
+    genotype: str                           # e.g. "Scn1a", "WT", "FCD"
     heating_session: int = 1
     n_seizures: int = 0                     # 0, 1, >1
     sudep: bool = False                    # Sudden Unexpected Death in Epilepsy
@@ -138,8 +130,4 @@ class Session:
     cohort: str = ""
     date: Optional[str] = None
     session_name: Optional[str] = None
-    # If set, classify_session returns this string instead of the
-    # genotype-by-seizure analytical bucket. Used by paradigms where the
-    # meaningful group axis isn't DS/WT × seized (e.g. opto, where the
-    # cohort is the subfolder name like "10HZ_DG_CPP").
     cohort_override: Optional[str] = None

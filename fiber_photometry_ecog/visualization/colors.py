@@ -1,27 +1,15 @@
-"""
-Cohort and landmark display constants.
-
-Internal keys (cohort names, landmark names) are unchanged across modules; only
-the strings that appear on plots are defined here so the user-facing wording
-can be tuned in one place.
-"""
+"""Cohort and landmark display constants."""
 
 # Per-session trace colors
 ECOG_COLOR = "dimgray"
 TEMP_COLOR = "black"
 
-# Cohort colors for group plots. Canonical genotype/seizure cohort_keys come
-# from core.cohort.classify_session (DS_sz / DS_no_sz / WT_sz / WT_no_sz);
-# opto experiment cohorts come from subfolder names in run_opto.py and are
-# pinned explicitly here so paired baseline/treatment plots use distinct
-# colors rather than both falling back to gray.
 COHORT_COLORS = {
     "DS_sz": "red",
     "DS_no_sz": "purple",
-    "WT_sz": "orange",      # NEW: WT with seizure (e.g. PTZ-induced)
+    "WT_sz": "orange",
     "WT_no_sz": "blue",
-    "FCD_sz": "red",        # FCD seizure: red to match the canonical
-                            # "seized" color used for DS_sz.
+    "FCD_sz": "red",
     "FCD_no_sz": "blue",
     # Dataset-specific pooled hyperthermia group keys. Individual points in
     # "No seizure" are overridden by source genotype in run_hyperthermia.py;
@@ -31,14 +19,9 @@ COHORT_COLORS = {
     # LC baseline-transient genotype-only groups.
     "DS": "red",
     "WT": "blue",
-    # PTZ pooled cohort (DS + WT combined) — the canonical view for PTZ
-    # since the chemoconvulsant evokes seizures uniformly across genotypes.
-    # Plotted in red because the only relevant sessions for this view are
-    # seized ones (PTZ universally induces seizures).
+    # Pooled PTZ cohort, combining DS and WT.
     "PTZ_pooled": "red",
-    # Opto cohorts render in black per spec — each panel shows a single
-    # cohort so there's no overlap to distinguish. Affects both per-session
-    # trace plots and the stim-aligned per-cohort mean plots.
+    # Black is used for single-burst optogenetic traces and cohort means.
     "10HZ_DG": "black",
     "10HZ_DG_CPP": "black",
     "1HZ_DG": "black",
@@ -48,9 +31,7 @@ COHORT_COLORS = {
     "20HZ_LC": "black",
 }
 
-# Fallback palette for unknown cohort keys (any subfolder name we haven't
-# explicitly pinned above). Hash-indexed in _color() so the same cohort
-# string always lands on the same color across runs and plots.
+# Fallback palette for unconfigured cohort keys.
 _FALLBACK_PALETTE = (
     "#1f77b4",  # blue
     "#2ca02c",  # green
@@ -66,10 +47,8 @@ _FALLBACK_PALETTE = (
 def cohort_color(cohort: str) -> str:
     """Resolve a cohort key to a plot color.
 
-    Pinned keys in `COHORT_COLORS` win. Anything else gets a stable
-    palette color (deterministic per cohort key) instead of plain gray —
-    so paired opto cohorts (e.g. ``10HZ_DG`` vs ``10HZ_DG_CPP``) never
-    end up sharing the gray fallback.
+    Use `COHORT_COLORS` for configured keys and a deterministic palette
+    selection for other keys.
     """
     if cohort in COHORT_COLORS:
         return COHORT_COLORS[cohort]
@@ -82,7 +61,6 @@ def cohort_color(cohort: str) -> str:
         h = (h * 31 + ord(ch)) & 0xFFFFFFFF
     return _FALLBACK_PALETTE[h % len(_FALLBACK_PALETTE)]
 
-# Display labels (what shows up on plots) - internal keys above are unchanged.
 COHORT_DISPLAY_LABELS = {
     "DS_sz": "DS sz",
     "DS_no_sz": "DS no sz",
@@ -95,8 +73,7 @@ COHORT_DISPLAY_LABELS = {
     "DS": "DS",
     "WT": "WT",
     "PTZ_pooled": "PTZ pooled",
-    # Opto cohorts: spaces in for readability, "10 Hz DG + CPP" line-broken
-    # so it fits FIG_SCATTER at 40pt tick size.
+# Optogenetic cohort display labels.
     "10HZ_DG": "10 Hz DG",
     "10HZ_DG_CPP": "10 Hz DG\n+ CPP",
     "1HZ_DG": "1 Hz DG",
@@ -118,8 +95,6 @@ LANDMARK_COLORS = {
 # Display labels for landmarks on axes and legends.
 LANDMARK_DISPLAY_LABELS = {
     "heating_start": "heating start",
-    # 2-line for "earliest electrographic change" so the 48pt title fits
-    # inside its column instead of overflowing into the next subplot.
     "eec": "earliest\nelectrographic change",
     "ueo": "seizure onset",
     "behavioral_onset": "behavioral onset",
@@ -142,6 +117,4 @@ def landmark_label(key: str) -> str:
     return LANDMARK_DISPLAY_LABELS.get(norm, key)
 
 
-# Z-scored dF/F display string - single source of truth so wording changes
-# propagate to every plot.
 DFF_LABEL = "z_ΔF/F"

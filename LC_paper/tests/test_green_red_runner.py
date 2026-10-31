@@ -11,7 +11,7 @@ from fiber_photometry_ecog.core.data_models import (
     Session,
     SessionLandmarks,
 )
-import run_green_red_ne as runner
+from LC_paper import run_green_red_ne as runner
 
 
 def _session(

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import run_grab_opto as runner
+from LC_paper import run_grab_opto as runner
 
 
 def _stim_signal(n_trains: int, *, pulses_in_first: int = 20) -> tuple[np.ndarray, float]:

@@ -6,8 +6,6 @@ Strategy B - Meiling's photometry preprocessing.
 3. OLS linear regression: detrended_iso -> detrended_signal -> motion estimate
 4. dF/F = (detrended_signal - motion_estimate) / expfit
 
-Limitation: OLS produces "downshifted" corrected signals (Keevers 2025)
-because it treats calcium transients as part of the isosbestic fit.
 """
 
 import numpy as np
@@ -64,7 +62,6 @@ class MeilingStrategy:
         return PhotometryResult(dff=dff)
 
 
-# Module-level convenience for backward compatibility
 def preprocess_meiling(
     signal_470: np.ndarray,
     signal_405: np.ndarray,

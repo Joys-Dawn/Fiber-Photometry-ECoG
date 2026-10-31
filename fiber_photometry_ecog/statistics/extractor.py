@@ -4,13 +4,9 @@ results so they can be fed to the stats engine.
 
 Each entry in `_SCALAR_REGISTRY` describes one analysis module:
     key            : module name (matches the keys used by app.py)
-    folder         : "means" or "transients" - drives which Stats_groups.csv
-                     the measurement lands in
+    folder         : "means" or "transients" statistics output directory
     extractor      : function(group_result) -> List[(mouse_id, h_session,
                                                      measurement_name, value)]
-
-To add a new measurement: extend the existing module's extractor (or
-register a new module). Tests will start running automatically.
 """
 
 from dataclasses import dataclass
@@ -25,7 +21,7 @@ SessionScalar = Tuple[str, int, str, float]
 
 
 def _safe_float(x: Any) -> float:
-    """Coerce a possibly-None / possibly-NaN value to plain float-or-NaN."""
+    """Convert to float; return NaN for missing or nonnumeric values."""
     if x is None:
         return math.nan
     try:
@@ -91,10 +87,7 @@ def _extract_ictal_mean(group_result) -> List[SessionScalar]:
         out.append((sr.mouse_id, sr.heating_session,
                     "delta_preictal_ictal_min", _safe_float(sr.delta_preictal_ictal_min)))
 
-    # Triggered-average AUCs, per landmark. per_session_meta is aligned with
-    # per_session_auc and holds (mouse_id, heating_session) for each row.
-    # `auc` is the column header in ictal_mean_auc.csv; suffix with the
-    # landmark since multiple landmarks share that column in the source.
+    # per_session_meta and per_session_auc share indices.
     for lm_name, ta in group_result.triggered_averages.items():
         meta = getattr(ta, "per_session_meta", None) or []
         for (mouse_id, h_sess), auc in zip(meta, ta.per_session_auc):
@@ -118,9 +111,6 @@ def _extract_postictal(group_result) -> List[SessionScalar]:
 def _extract_spike_triggered(group_result) -> List[SessionScalar]:
     out: List[SessionScalar] = []
     for sr in group_result.session_results:
-        # n_spikes==0 means no interictal spikes were found in that session -
-        # the per-session AUC is NaN by design, but we still emit a row so
-        # n / mean / sem reflect how many sessions actually had data.
         out.append((sr.mouse_id, sr.heating_session,
                     "auc", _safe_float(sr.auc)))
     return out
@@ -187,8 +177,6 @@ def extract_all(
             try:
                 scalars = spec.extractor(group_result)
             except Exception:
-                # Extractor errors shouldn't take down stats for the entire
-                # run; skip the failing (cohort, module) pair.
                 continue
             for mouse_id, h_sess, meas_name, value in scalars:
                 rows.append({
@@ -209,9 +197,7 @@ def group_values(
 ) -> Dict[Tuple[str, str, str], Dict[str, np.ndarray]]:
     """Pivot long rows into {(folder, module, measurement): {cohort: np.ndarray}}.
 
-    Only cohorts listed in `cohorts_to_compare` are retained, and the inner
-    dict preserves that list's order - so downstream stats output reports
-    them in the requested order regardless of cohort-iteration order.
+    Retains only `cohorts_to_compare`, in that order.
     """
     selected = set(cohorts_to_compare)
     grouped: Dict[Tuple[str, str, str], Dict[str, List[float]]] = {}

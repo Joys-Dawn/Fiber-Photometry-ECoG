@@ -1,7 +1,7 @@
 """
 Open Ephys binary format reader.
 
-Directory layout expected (per Chandni's snr-analysis):
+Expected directory layout:
   <session_dir>/
     Record Node <id>/
       experiment1/
@@ -123,8 +123,7 @@ def _find_recording_dir(session_dir: Path, recording_num: int = 1) -> Path:
                     fallback = rec_dir
 
     if fallback is not None:
-        # Let the downstream loader raise a clearer error pointing at the
-        # missing continuous.dat (preserves prior behavior for malformed setups).
+        # The loader reports missing continuous.dat files.
         return fallback
 
     raise FileNotFoundError(
@@ -248,11 +247,9 @@ def read_oep(
     has_temperature : if False, no temperature probe was connected for this
         recording (e.g. PTZ-evoked seizure paradigm). The temperature stream
         is not read; `temperature_raw` is returned as NaN-filled and slope /
-        intercept / bit_volts are NaN. Downstream code treats NaN
-        temperature gracefully (analyses produce NaN landmarks and empty
-        plots rather than crashing).
+        intercept / bit_volts are NaN.
     stim_channel : 1-indexed analog stim channel on the ECoG stream (used by
-        opto experiments — the stimulator's command voltage is routed to one
+        opto experiments; the stimulator's command voltage is routed to one
         of the Intan ADCs). If given, the channel is read, bit-volts scaled,
         and returned as `OEPData.stim` (volts). If None, no stim channel is
         loaded.

@@ -1,14 +1,4 @@
-"""
-Calcium transient detection.
-
-Two methods:
-1. prominence: scipy find_peaks with prominence (Chandni's original, Strategy A)
-2. wallace: two-step - height gate then prominence filter (Wallace 2025 ProM)
-
-Detection is performed on the z-scored HPF signal. Transient properties
-(amplitude, half-width) are measured on raw dF/F at the detected peak
-locations, per Wallace et al. 2025 and Chandni's code (detect_transients.m).
-"""
+"""Transient detection and event measurements."""
 
 from typing import Optional, List
 
@@ -26,26 +16,7 @@ def detect_transients(
     config: TransientConfig | None = None,
     temperature: Optional[np.ndarray] = None,
 ) -> List[TransientEvent]:
-    """Detect calcium transients and measure their properties.
-
-    Peak detection runs on the z-scored HPF signal (zdff_hpf) where the
-    prominence threshold (default 1.0) is in z-score units. Properties
-    (amplitude, peak-to-trough, half-width) are measured on raw dF/F at
-    the same peak locations, per Wallace 2025.
-
-    Parameters
-    ----------
-    zdff_hpf : z-scored high-pass filtered dF/F (for detection)
-    dff_raw : raw dF/F signal (for property measurement)
-    fs : sampling rate (Hz)
-    config : detection parameters (uses defaults if None)
-    temperature : optional temperature trace (same length) for
-        cross-referencing transient events
-
-    Returns
-    -------
-    List of TransientEvent, sorted by peak_time.
-    """
+    """Detect peaks and measure amplitude and width on the supplied signals."""
     if zdff_hpf is None:
         return []
 
@@ -87,7 +58,7 @@ def _detect_prominence(
     if len(peaks) == 0:
         return _build_events(zdff_hpf, dff_raw, fs, peaks, properties, config, temperature)
 
-    # Post-hoc width filter (per Chandni: remove peaks longer than maxWidth)
+    # Exclude peaks whose half-prominence width exceeds the configured maximum.
     max_width_samples = int(config.max_width_s * fs)
     widths, _, _, _ = peak_widths(zdff_hpf, peaks, rel_height=0.5)
     mask = widths <= max_width_samples
@@ -105,32 +76,10 @@ def _detect_wallace(
     config: TransientConfig,
     temperature: Optional[np.ndarray],
 ) -> List[TransientEvent]:
-    """Wallace 2025 Prominence Method (ProM): two-step sequential detection.
-
-    Step 1: find_peaks on z-scored signal with height >= min_height (z=1.0)
-    Step 2: compute prominence on raw %dF/F at surviving peak timestamps,
-            keep only peaks with prominence >= min_prominence (2.0)
-
-    Per Wallace 2025:
-    - "a z-score threshold was applied to systematically detect signals"
-    - "The detected peaks were timestamped, after which they were assessed
-       for prominence within the non-normalized %dF/F trace."
-    - "We used a prominence value of 2 for inclusion criteria"
-    - "The non-normalized, preprocessed %dF/F signals at the same timestamps
-       were then quantified for amplitude (the maximal %dF/F value), width
-       (the time it took for the signal to exceed then fall back below the
-       cutoff)"
-    """
+    """Apply a z-score height threshold, then a fractional dF/F prominence threshold."""
     height = config.min_height if config.min_height is not None else 0
     prom_threshold = config.min_prominence if config.min_prominence is not None else 0
 
-    # Step 1: height gate on z-scored signal.
-    # Wallace 2025 doesn't specify MinPeakDistance, which caused ~11% of
-    # ITIs in WT baseline to be <100 ms (double-counting the same transient).
-    # A 0.3 s refractory lockout ≈ one jGCaMP8s decay half-time (307 ms,
-    # Zhang et al. 2023, Janelia cultured-neuron benchmark) eliminates all
-    # sub-100 ms ITIs with zero change to rate or amplitude distributions
-    # on this dataset (see diagnostics/strategy_c_sweep/).
     peaks, _ = find_peaks(
         zdff_hpf,
         height=height,
@@ -140,15 +89,11 @@ def _detect_wallace(
     if len(peaks) == 0:
         return []
 
-    # Step 2: compute prominence on raw %dF/F, filter by threshold
     prominences, _, _ = peak_prominences(dff_raw, peaks)
     mask = prominences >= prom_threshold
     peaks = peaks[mask]
     prominences = prominences[mask]
 
-    # Step 3: drop peaks wider than max_width_s (matches Strategy A behavior;
-    # GCaMP/GRAB-NE transients wider than this are almost always slow drift,
-    # not real events).
     if len(peaks) > 0:
         max_width_samples = int(config.max_width_s * fs)
         widths, _, _, _ = peak_widths(dff_raw, peaks, rel_height=0.5)
@@ -175,7 +120,7 @@ def _build_events(
 
     Amplitude and peak-to-trough are measured on dff_raw.
     Half-width is measured on width_signal (defaults to zdff_hpf for
-    Strategy A per Chandni; callers pass dff_raw for Wallace).
+    Strategy A; callers pass dff_raw for the Wallace method).
     """
     if width_signal is None:
         width_signal = zdff_hpf

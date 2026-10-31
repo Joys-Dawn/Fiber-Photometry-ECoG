@@ -1,9 +1,7 @@
 """
 Statistical analysis for cohort comparisons.
 
-Generic unpaired-group stats - picks parametric vs non-parametric tests
-per measurement using the same skew/kurtosis/N heuristic as
-EphysAutomatedAnalysis (Curran, West & Finch 1996).
+Independent-group test selection uses `decision.should_use_parametric`.
 
 For 2 cohorts:    Welch's t-test     | Mann-Whitney U
 For >2 cohorts:   one-way ANOVA      | Kruskal-Wallis  (with post-hoc pairs)

@@ -1,23 +1,12 @@
 """
 Opto-stim burst onset/offset detection from the analog stim channel.
 
-The stimulator command voltage is recorded on one of the Intan ADC inputs.
-Most sessions contain a single ~10-second burst of pulses in an otherwise
-near-silent trace, but two failure modes show up in practice:
-
-  1. Post-stim artifacts (single-sample spikes 10-400 s after the real
-     burst) that a naive first-to-last threshold-crossing algorithm
-     pulls into the burst span — silently misplacing ``off_time``.
-  2. Multi-bout sessions where the protocol delivered two bouts and the
-     experimenter wants the Nth bout used as the analysis landmark
-     (e.g. 4361 1Hz_DG, where bout 2 == "stim_Meiling").
-
-Detection is therefore done in two steps:
-    * Gap-cluster supra-threshold samples into discrete bursts (runs
-      separated by > ``min_gap_s`` are different bursts).
-    * Pick the longest cluster by default (artifacts are short — tens
-      of samples vs. thousands for a real 10s burst), or the cluster
-      at a caller-supplied 0-indexed position in time order.
+The stimulator command voltage is recorded on an Intan ADC input.
+Supra-threshold samples separated by more than ``min_gap_s`` are assigned
+to separate bursts. The default selection is the cluster containing the
+most supra-threshold samples; ``burst_index`` selects a cluster by its
+zero-based temporal index. This separates isolated artifacts from bursts
+and supports recordings containing multiple stimulation bouts.
 """
 
 import logging
@@ -42,20 +31,12 @@ def detect_stim_bursts(
     stim_signal : 1-D array of stim ADC samples (volts).
     fs : sampling rate of `stim_signal` in Hz.
     threshold_fraction : fraction of |peak| used as the crossing threshold.
-        Defaults to 0.5; the per-session amplitude is large enough relative
-        to the noise floor that the exact fraction doesn't matter.
+        Defaults to 0.5.
     min_gap_s : runs of supra-threshold samples separated by a quiet
         interval longer than this (in seconds) are split into separate
-        bursts. Defaults to 5 s — wide enough that 1 Hz / 15 ms pulses
-        (1 s inter-pulse interval) merge into one burst cluster, but
-        narrow enough that two distinct bouts (typically 10-20 s apart)
-        stay separate. Real lab data has tail artifacts as close as
-        12.7 s after burst end (4361 S1 20HZ_DG_Atomoxetine), so 5 s
-        keeps them rejected.
+        bursts. The default 5 s gap groups 1 Hz pulses into a single burst.
     min_burst_samples : minimum sample count for a cluster to be kept.
-        Short isolated noise spikes are filtered out; the real burst
-        for a 10 Hz / 15 ms / 10 s protocol has ~3000 supra-threshold
-        samples at 1 kHz.
+        Clusters below this count are excluded.
 
     Returns
     -------
@@ -75,10 +56,6 @@ def detect_stim_bursts(
         raise ValueError(f"detect_stim_bursts: invalid fs={fs}")
 
     abs_sig = np.abs(stim_signal)
-    # Opto sessions extend the photometry timebase past the OEP recording,
-    # which leaves NaNs in stim_raw outside the OEP overlap. nan-aware max
-    # keeps detection robust; NaN > threshold evaluates to False already,
-    # so the threshold-crossing logic itself needs no further handling.
     peak = float(np.nanmax(abs_sig))
     if not np.isfinite(peak) or peak <= 0:
         raise ValueError("detect_stim_bursts: stim channel is identically zero")
@@ -125,16 +102,9 @@ def detect_stim_burst(
 ) -> Tuple[float, float]:
     """Detect the onset and offset of one opto-stim burst.
 
-    Picks the cluster with the most supra-threshold samples by default —
-    artifacts are short (tens of samples) while a real 10s burst has
-    thousands, so longest-cluster reliably excludes them. When
-    ``burst_index`` is given, returns the (0-indexed) cluster in time
-    order instead. Used to override the default pick on sessions where
-    the protocol selected a non-largest bout (e.g. the 2nd of two
-    equally-sized 1 Hz bouts).
-
-    Logs a warning when multiple bursts are present and ``burst_index``
-    was not supplied — the caller probably wants to add an override.
+    Selects the cluster with the most supra-threshold samples by default.
+    ``burst_index`` instead selects the zero-indexed cluster in time order.
+    Logs a warning when multiple bursts exist without an explicit index.
 
     Raises
     ------

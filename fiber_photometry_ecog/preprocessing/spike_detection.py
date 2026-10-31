@@ -40,10 +40,7 @@ def detect_spikes(
     if config is None:
         config = SpikeDetectionConfig()
 
-    # Z-score relative to baseline. Use nan-aware stats so opto sessions —
-    # whose first few seconds may be pre-OEP NaN padding (the photometry
-    # timebase extends past OEP) — still derive a finite baseline from
-    # whatever real samples land in the baseline window.
+    # Ignore NaN padding outside the ECoG recording when estimating baseline.
     baseline_n = int(baseline_end_s * fs)
     baseline = ecog_filtered[:baseline_n]
     baseline_mean = np.nanmean(baseline)
@@ -52,7 +49,7 @@ def detect_spikes(
             or baseline_std == 0:
         return []
     zscored = (ecog_filtered - baseline_mean) / baseline_std
-    # find_peaks errors on NaN; clean the NaN positions before scanning.
+    # Replace non-finite samples before peak detection.
     zscored = np.where(np.isfinite(zscored), zscored, 0.0)
 
     # Threshold

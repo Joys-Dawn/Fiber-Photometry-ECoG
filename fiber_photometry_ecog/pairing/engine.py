@@ -58,8 +58,7 @@ def compute_seizure_group_means(
     if not seizure_sessions:
         raise ValueError("No valid seizure sessions provided.")
 
-    # Required-landmarks gate: every seizure session MUST have eec/ueo/off
-    # times and matching temps. behavioral_onset is optional but all-or-none.
+    # EEC/UEO/OFF times and temperatures are required; behavioral onset is all-or-none.
     missing_required = []
     for sess in seizure_sessions:
         lm = sess.landmarks
@@ -135,7 +134,7 @@ def _find_first_time_at_temp(
     target_temp: float,
     max_idx: Optional[int] = None,
 ) -> Optional[float]:
-    """Find the first time (seconds) when temperature reaches target_temp.
+    """Return the time of the first closest-temperature sample.
 
     Searches only the heating phase (up to max_idx, or the index of max
     temperature if max_idx is not given).
@@ -145,11 +144,11 @@ def _find_first_time_at_temp(
     temperature_trace : smoothed temperature in Celsius
     fs : sampling rate (Hz)
     target_temp : temperature to match (degrees C)
-    max_idx : search up to and including this index. If None, uses argmax.
+    max_idx : search through this index; None uses the temperature maximum.
 
     Returns
     -------
-    Time in seconds, or None if the control never reaches the target temp.
+    Time in seconds, or None for an empty search interval.
     """
     if len(temperature_trace) == 0:
         return None
@@ -162,8 +161,7 @@ def _find_first_time_at_temp(
     if len(heating) == 0:
         return None
 
-    # Take the first sample closest to target_temp, unconditionally.
-    # Matches temp_eq_times.m: find(min(abs(temp - target)),1,'first').
+    # Nearest-temperature matching, as in temp_eq_times.m.
     diff = np.abs(heating - target_temp)
     best_idx = int(np.nanargmin(diff))
     return best_idx / fs
@@ -175,8 +173,8 @@ def assign_equivalents_temperature(
 ) -> None:
     """Assign equivalent landmarks to a control session via temperature matching.
 
-    Finds the first time during the heating phase when the control's
-    temperature matches each mean seizure landmark temperature.
+    Uses the first closest-temperature sample during heating for each
+    mean seizure landmark temperature.
     OFF equivalent = UEO equivalent time + mean seizure duration.
 
     Modifies control_session.landmarks in place.

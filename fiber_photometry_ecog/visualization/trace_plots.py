@@ -1,8 +1,7 @@
 """
 Per-session trace plots.
 
-Display v1: full sanity check (6 subplots, entire trace).
-Display v2: zoomed processed (2 subplots, centered on seizure onset).
+Full-recording, event-aligned, baseline, and transient-detection views.
 """
 
 import os
@@ -105,8 +104,7 @@ def _draw_landmark_lines(
     axes : array of Axes
     landmarks : SessionLandmarks
     offset : value subtracted from each time (0 for absolute, t_zero for relative)
-    label_axis : retained for backwards compatibility; labels always sit above
-        axes[0] in this implementation.
+    label_axis : unused; labels always sit above axes[0].
     """
     entries = [
         ("heating_start", landmarks.heating_start_time),
@@ -124,9 +122,7 @@ def _cohort_color(session: Session) -> str:
     return cohort_color(classify_session(session))
 
 
-# Filenames want "DS_nosz"/"WT" (no underscore between parts) while the
-# cohort keys themselves are "DS_no_sz"/"WT_no_sz". Map between the two
-# so QC filenames stay stable across the cohort-key refactor.
+# Map cohort keys to QC filename labels.
 _FILENAME_TAGS = {
     "DS_sz": "DS_sz",
     "DS_no_sz": "DS_nosz",
@@ -138,12 +134,8 @@ _FILENAME_TAGS = {
 def _cohort_filename_tag(session: Session) -> str:
     """Short filesystem-safe cohort label for per-session QC filenames.
 
-    Keeps DS_sz / DS_nosz / WT in sync with the group-plot naming convention
-    (cf. UEO_aligned_traces_DS_sz.png, etc.). Without this, two sessions that
-    share `(mouse_id, S#)` across cohorts - e.g. 2575_S1 in scn1a_seizure vs
-    2575_S1 in scn1a_NOseizure - would silently overwrite each other's QC
-    plots. Custom cohorts (opto subfolders like "10HZ_DG_CPP") use the
-    classify_session string as-is.
+    Distinguishes sessions with the same mouse/session ID in different cohorts.
+    Custom cohorts use the classify_session label.
     """
     key = classify_session(session)
     return _FILENAME_TAGS.get(key, key)
@@ -240,12 +232,12 @@ def plot_sanity_check(
     output_dir: str,
     transients: Optional[List[TransientEvent]] = None,
 ) -> str:
-    """Display v1: 6 vertically stacked subplots, full trace.
+    """Full recording with six vertically stacked panels.
 
     Subplots:
         1. Raw 470 & 405 photometry signals
         2. Corrected z-ΔF/F (mean stream)
-        3. HPF + detected transients marked
+        3. Transient detection signal and detected peaks
         4. Raw ECoG
         5. Filtered ECoG
         6. Temperature
@@ -263,9 +255,7 @@ def plot_sanity_check(
         transients = session.transients
 
     fig, axes = plt.subplots(6, 1, figsize=(24, 26), sharex=True)
-    # Six stacked panels share the global 48pt label size, which makes the
-    # ylabels collide with each other under constrained_layout. These are
-    # diagnostic plots (not for publication), so shrink them locally.
+    # Use smaller labels on stacked QC panels.
     _YLABEL_SIZE = 28
 
     # 1. Raw 470 & 405
@@ -346,7 +336,6 @@ def plot_sanity_check(
             ),
         )
     except Exception:
-        # HTML is best-effort; never block the PNG output if plotly is broken.
         pass
 
     plot_baseline(session, output_dir, color=color)
@@ -359,7 +348,7 @@ def plot_zoomed(
     output_dir: str,
     window_s: float = 150.0,
 ) -> str:
-    """Display v2: 2 subplots centered on seizure onset / equivalent.
+    """Two subplots centered on seizure onset or equivalent.
 
     Subplots:
         1. Corrected z-ΔF/F
@@ -438,14 +427,12 @@ def plot_zoomed(
             ),
         )
     except Exception:
-        # HTML is best-effort; never block the PNG output if plotly is broken.
         pass
 
     return path
 
 
-# Opto plots reuse the UEO landmark color but relabel the line so the
-# experimenter sees the stim-event language they expect.
+# Stimulation labels for shared UEO/OFF landmarks.
 _OPTO_LANDMARK_LABELS = {
     **LANDMARK_DISPLAY_LABELS,
     "ueo": "stim on",
@@ -481,8 +468,8 @@ def plot_sanity_check_opto(
 
     Subplots:
         1. Raw 470 (solid) + 405 (dashed), both black
-        2. Corrected z-ΔF/F (black)
-        3. HPF + detected transients (black, transient marks black)
+        2. Analysis signal (black)
+        3. Transient detection signal and peaks (black)
         4. Opto stim raw trace (black)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -495,12 +482,10 @@ def plot_sanity_check_opto(
         transients = session.transients
 
     fig, axes = plt.subplots(4, 1, figsize=(24, 18), sharex=True)
-    # Four stacked panels share the global 48pt label size, which makes the
-    # ylabels collide with each other under constrained_layout. These are
-    # diagnostic plots (not for publication), so shrink them locally.
+    # Use smaller labels on stacked QC panels.
     _YLABEL_SIZE = 28
 
-    # 1. Raw 470 (solid) + 405 (dashed) — both black, distinguished by style.
+    # 1. Raw 470 (solid) and 405 (dashed), both black.
     ax = axes[0]
     ax.plot(time_s, raw.signal_470, color="black", linewidth=0.3, label="470nm")
     ax.plot(time_s, raw.signal_405, color="black", linewidth=0.3,
@@ -509,13 +494,13 @@ def plot_sanity_check_opto(
     ax.set_ylabel("Raw (V)", fontsize=_YLABEL_SIZE)
     ax.legend(loc="upper right")
 
-    # 2. Corrected z-ΔF/F.
+    # 2. Analysis signal.
     ax = axes[1]
     ax.plot(time_s, proc.photometry.dff_zscore, color="black", linewidth=0.3)
     _style.add_zero_y(ax, ensure_visible=True)
     ax.set_ylabel(DFF_LABEL, fontsize=_YLABEL_SIZE)
 
-    # 3. HPF stream + detected transients.
+    # 3. Transient detection signal and peaks.
     _used_hpf = (
         getattr(session.preprocessing_config, "photometry", None)
         and session.preprocessing_config.photometry.apply_hpf
@@ -534,8 +519,7 @@ def plot_sanity_check_opto(
         )
     ax.set_ylabel(_det_label, fontsize=_YLABEL_SIZE)
 
-    # 4. Opto stim raw trace (no axis crash if it's None — render an empty
-    # panel and label it as missing so the layout stays consistent).
+    # 4. Raw stimulation trace, or a labeled empty panel if unavailable.
     ax = axes[3]
     if raw.stim_raw is not None and len(raw.stim_raw) == len(time_s):
         ax.plot(time_s, raw.stim_raw, color="black", linewidth=0.5)
@@ -593,7 +577,7 @@ def plot_zoomed_opto(
 
     fig, axes = plt.subplots(2, 1, figsize=(18, 12), sharex=True)
 
-    # 1. z-ΔF/F
+    # 1. Analysis signal
     ax = axes[0]
     ax.plot(rel_time[mask], proc.photometry.dff_zscore[mask],
             color="black", linewidth=0.4)
@@ -736,7 +720,7 @@ def _add_landmark_overlays_plotly(
         fig.add_annotation(
             x=x, y=1.0, xref="x", yref="paper",
             yshift=8 + level * 42,
-            # Plotly takes "<br>" for line breaks, not "\n" — translate.
+            # Plotly uses "<br>" for annotation line breaks.
             text=LANDMARK_DISPLAY_LABELS[key].replace("\n", "<br>"),
             showarrow=False, font=dict(color=lcolor, size=14),
             xanchor="center", yanchor="bottom",
@@ -895,11 +879,10 @@ def _write_sanity_check_html(
     html_path: str,
 ) -> None:
     """Interactive companion to plot_sanity_check's PNG. Six stacked panels
-    over the full recording: raw 470/405, z-ΔF/F, HPF detection stream with
+    over the full recording: raw 470/405, z-ΔF/F, detection signal with
     transient markers, raw ECoG, filtered ECoG, temperature.
 
-    Long ECoG traces are stride-decimated so the file stays interactive in a
-    browser; photometry channels run at ~130 Hz so they're left intact.
+    All channels share the same stride decimation and time axis.
     """
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
@@ -1179,12 +1162,12 @@ def plot_transient_review(
     prominences: List[float],
     transients_by_prominence: Dict[float, List[TransientEvent]],
 ) -> str:
-    """Display v3: transient prominence review over baseline period.
+    """Transient prominence review over the baseline period.
 
     Rows:
         0: Raw 470nm + 405nm
         1: Corrected dF/F (NOT z-scored)
-        2..N: z-ΔF/F HPF with transient peaks at each prominence level
+        2..N: detection signal with peaks at each prominence level
     x-axis: 0 to heating_start_time (baseline only).
     """
     os.makedirs(output_dir, exist_ok=True)

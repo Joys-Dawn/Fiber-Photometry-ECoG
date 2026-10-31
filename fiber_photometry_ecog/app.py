@@ -1,10 +1,7 @@
 """
-Fiber Photometry & ECoG Analysis Tool - Tkinter GUI.
+Tkinter interface for fiber photometry and ECoG analysis.
 
-Three-tab interface following the EphysAutomatedAnalysis pattern:
-  Tab 1 - Data Loading & Cohort Management
-  Tab 2 - Preprocessing
-  Tab 3 - Extraction
+Interface structure follows EphysAutomatedAnalysis.
 """
 
 import logging
@@ -234,14 +231,12 @@ class FiberPhotometryApp:
     # ==================================================================
 
     def _setup_preprocessing_tab(self, parent: ttk.Frame) -> None:
-        # --- User decisions (per xlsx) ---
         config_frame = ttk.LabelFrame(parent, text="Preprocessing", padding=10)
         config_frame.pack(fill="x", padx=5, pady=5)
 
         row0 = ttk.Frame(config_frame)
         row0.pack(fill="x", pady=2)
         ttk.Label(row0, text="Photometry strategies (each checked one is run):").pack(side="left")
-        # IRLS is the chosen default; the others are opt-in for pilot comparison.
         self.strategy_checks: Dict[str, tk.BooleanVar] = {
             "A": tk.BooleanVar(value=False),
             "B": tk.BooleanVar(value=False),
@@ -253,8 +248,7 @@ class FiberPhotometryApp:
                 row0, text=f"{letter} ({STRATEGY_NAMES[letter]})",
                 variable=self.strategy_checks[letter],
             ).pack(side="left", padx=4)
-        # Single-strategy var kept for the load-saved/extract flows which still
-        # operate on one strategy at a time.
+        # Loading and extraction operate on one strategy at a time.
         self.strategy_var = tk.StringVar(value="C")
 
         # --- Run button + progress ---
@@ -326,7 +320,6 @@ class FiberPhotometryApp:
     # ==================================================================
 
     def _setup_extraction_tab(self, parent: ttk.Frame) -> None:
-        # --- Pairing mode (per xlsx: user decision #2) ---
         pair_frame = ttk.LabelFrame(parent, text="Control Pairing", padding=10)
         pair_frame.pack(fill="x", padx=5, pady=5)
 
@@ -335,12 +328,6 @@ class FiberPhotometryApp:
         ttk.Combobox(pair_frame, textvariable=self.pairing_mode_var,
                       values=["temperature", "time"], state="readonly", width=14).pack(side="left", padx=5)
 
-        # --- Cohorts to compare ---
-        # Drives plot filtering: every multi-cohort plot produced by extraction
-        # is restricted to the ticked cohorts. Per-session diagnostics
-        # (parameter detection, quality check) ignore the selection. The same
-        # set is also written into the Statistics-tab checkboxes after a run
-        # so the default Run there matches what was just plotted.
         cmp_frame = ttk.LabelFrame(parent, text="Cohorts to compare", padding=10)
         cmp_frame.pack(fill="x", padx=5, pady=5)
         ttk.Label(
@@ -398,7 +385,6 @@ class FiberPhotometryApp:
             foreground="#555",
         ).pack(anchor="w", pady=(0, 5))
 
-        # 4 checkboxes - one per cohort key, ordered DS first then WT.
         # Defaults to the primary DS_sz vs WT_no_sz hyperthermia comparison.
         self.stats_cohort_vars: Dict[str, tk.BooleanVar] = {
             "DS_sz":    tk.BooleanVar(value=True),
@@ -474,8 +460,6 @@ class FiberPhotometryApp:
             )
             return
 
-        # All work happens on a worker thread so the UI stays responsive,
-        # mirroring the extraction tab's pattern.
         def worker():
             self.root.after(
                 0, lambda: self.stats_progress_label.configure(
@@ -485,8 +469,6 @@ class FiberPhotometryApp:
             self._log_stats(
                 f"Comparing cohorts: {', '.join(selected)}"
             )
-            # Use the experiment folder name (e.g. "DG_GRABne") as the
-            # stats CSV prefix so two groups can be open in Excel at once.
             stats_name_prefix = Path(self.experiment_path_var.get().strip()).name
             try:
                 stats_paths = run_group_comparisons(
@@ -584,10 +566,7 @@ class FiberPhotometryApp:
             if log_lookup and (mouse_id, date_str) in log_lookup:
                 d.update(log_lookup[(mouse_id, date_str)])
             elif log_lookup and any(m == mouse_id for (m, _) in log_lookup):
-                # Opto logs commonly have one row per mouse (covering baseline
-                # and paired post-treatment sessions on different dates). Fall
-                # back to the first matching mouse row so per-mouse settings
-                # like stim_channel propagate to later sessions.
+                # Opto logs may provide one row per mouse.
                 mouse_key = next(k for k in log_lookup if k[0] == mouse_id)
                 d.update(log_lookup[mouse_key])
             else:
@@ -854,8 +833,7 @@ class FiberPhotometryApp:
                             session.n_seizures, "yes" if session.sudep else "",
                             include_str, "", status),
                 )
-                # Regenerate sanity check plots so loading cached data produces
-                # the same verification outputs as a fresh preprocessing run.
+                # Regenerate quality-check plots from the loaded session.
                 if session.processed is not None and session.raw is not None:
                     try:
                         plot_sanity_check(session, sanity_out, session.transients)
@@ -1046,8 +1024,7 @@ class FiberPhotometryApp:
     def _read_preprocessing_config(self, strategy: str) -> PreprocessingConfig:
         """Build a PreprocessingConfig for *strategy*.
 
-        Only the strategy letter is user-selectable; everything else uses
-        scientifically validated defaults from PreprocessingConfig.
+        Only the strategy is user-selectable; other parameters use defaults.
         """
         return PreprocessingConfig(
             photometry=PhotometryConfig(strategy=strategy),
@@ -1100,10 +1077,6 @@ class FiberPhotometryApp:
                                 text=f"{lbl}: {s} ({idx+1}/{t})"))
 
                     session.preprocessing_config = config
-                    # For opto, heating_start_time is None here and gets set
-                    # to the stim onset inside preprocess_session. The strategies
-                    # already z-score off session.landmarks directly, so this
-                    # config field is a label, not load-bearing.
                     config.photometry.baseline_end_s = session.landmarks.heating_start_time
 
                     try:
@@ -1124,10 +1097,6 @@ class FiberPhotometryApp:
 
                     self.root.after(0, lambda idx=i: self._update_session_status(idx, "preprocessed"))
 
-                # Auto-save when multiple strategies are selected (the user is
-                # building a side-by-side comparison and clearly wants both on
-                # disk); fall back to the existing prompt for the single-
-                # strategy case.
                 if len(strategies) > 1:
                     self.root.after(0, lambda c=config: self._save_preprocessed_silent(c))
                 else:
@@ -1146,11 +1115,7 @@ class FiberPhotometryApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _save_preprocessed_silent(self, config) -> None:
-        """Save preprocessed sessions for *config*'s strategy without prompting.
-
-        Used when running multi-strategy preprocessing: each strategy auto-saves
-        so the user gets a complete side-by-side comparison on disk.
-        """
+        """Save preprocessed sessions for *config*'s strategy without prompting."""
         exp_path = self.experiment_path_var.get().strip()
         if not exp_path:
             return
@@ -1229,7 +1194,6 @@ class FiberPhotometryApp:
     # ------------------------------------------------------------------
 
     def _read_analysis_config(self) -> AnalysisConfig:
-        """Build an AnalysisConfig with defaults per xlsx spec."""
         return AnalysisConfig(
         )
 
@@ -1274,11 +1238,6 @@ class FiberPhotometryApp:
                 self.root.after(0, lambda: self.extract_progress_label.configure(text=msg))
                 self._log_extract(msg)
 
-            # Cohort comparison selection (from the Extraction tab checkboxes).
-            # Every multi-cohort plot is restricted to these keys; modules that
-            # operate per session (parameter detection, quality check) ignore
-            # the selection. cohort_module_results below stays full so the
-            # Statistics tab can still re-run with a different subset.
             comparison_cohorts = {
                 k for k, v in self.compare_cohort_vars.items() if v.get()
             }
@@ -1320,10 +1279,8 @@ class FiberPhotometryApp:
             for s in self.sessions:
                 cohort_groups.setdefault(classify_session(s), []).append(s)
 
-            # Global mean UEO->OFF duration across ALL seized sessions, used
-            # as the triggered-AUC integration window so every cohort's AUC
-            # is comparable. Crashes hard if no session has both landmarks
-            # set - that's intentional for these seizure-centric analyses.
+            # Mean seizure duration supplies the default triggered-AUC window.
+            # Raises ValueError if no session has valid onset/offset landmarks.
             global_mean_duration = mean_seizure_duration(self.sessions)
             self._log_extract(
                 f"  Mean seizure duration (UEO->OFF) = "
@@ -1342,9 +1299,6 @@ class FiberPhotometryApp:
                 ("Postictal", compute_postictal, plot_postictal, means_dir),
                 ("Spike-triggered averages", None, plot_spike_triggered, means_dir),
             ]
-            # Experiment folder name is the same prefix used by the stats CSV;
-            # appended to every per-cohort artifact filename so multiple groups
-            # can sit in one shared folder without overwriting each other.
             name_prefix = Path(self.experiment_path_var.get().strip()).name
             _ANALYSIS_MODULES_WITH_PREFIX = {
                 "Cohort characteristics", "Pre-ictal mean", "Ictal mean",
@@ -1352,10 +1306,6 @@ class FiberPhotometryApp:
             }
 
             failed_modules = []
-            # Capture cross-module data for follow-up plots (Phase 2f, 4e) and
-            # the cohort-level stats step. cohort_module_results is indexed by
-            # cohort first so the stats runner can pull per-session scalars
-            # across every analysis module in one pass.
             spike_times_by_cohort: Dict[str, List[np.ndarray]] = {}
             cohort_module_results: Dict[str, Dict[str, object]] = {
                 c: {} for c in cohort_groups
@@ -1375,8 +1325,6 @@ class FiberPhotometryApp:
                             results[cohort_name] = compute_spike_triggered_average(
                                 sessions, spike_times_list, config)
                         elif name == "Ictal mean":
-                            # OFF AUC fixed at 100 s (spec D5); other landmarks
-                            # use the global mean seizure duration.
                             results[cohort_name] = compute_ictal_mean(
                                 sessions, auc_end_s=global_mean_duration,
                                 config=config,
@@ -1414,15 +1362,6 @@ class FiberPhotometryApp:
                 self._log_extract(f"  values_means CSV: ERROR - {e}")
                 logger.exception("Error writing values_means CSV")
 
-            # --- 9b. Follow-up multi-source plots ---
-            # Wide-window UEO-triggered mean per cohort (summary_UEO_aligned_traces
-            # and per-cohort standalones, both standard and _extended windows).
-            # TWO computations, one per window: a session only contributes
-            # to a window's mean if its recording actually spans it. Keeps
-            # the standard ±150s mean from being hijacked by the 1-2 long
-            # tails, and the extended -150..+1000s mean honestly reflects
-            # whatever N can span 1000s. The heatmap path uses cohort_groups
-            # directly and NaN-pads for display, so ALL sessions appear there.
             progress("Writing per-cohort UEO-aligned traces...")
             try:
                 wide_ueo = {
@@ -1451,10 +1390,6 @@ class FiberPhotometryApp:
                 self._log_extract(f"  Per-cohort UEO traces: ERROR - {e}")
                 logger.exception("Error in per-cohort UEO traces")
 
-            # UEO-aligned heatmaps split by cohort (Phase 4e). Takes the
-            # cohort session list directly so the heatmap can NaN-pad
-            # short-tailed rows for display, without contaminating the
-            # strict mean/SEM aggregation that drives the trace plot.
             if cohort_groups:
                 progress("Writing UEO-aligned heatmaps...")
                 try:
@@ -1468,10 +1403,6 @@ class FiberPhotometryApp:
                     self._log_extract(f"  UEO heatmaps: ERROR - {e}")
                     logger.exception("Error in UEO heatmaps")
 
-            # Experimental (470) vs isosbestic (405) spike-triggered overlay
-            # (AUC_interictal_spikes_experimental_vs_isosbestic). Lives under
-            # plots_and_values_means/ alongside the other interictal-spikes AUC
-            # outputs.
             if spike_times_by_cohort:
                 progress("Writing 470 vs 405 spike-triggered overlay...")
                 try:
@@ -1506,17 +1437,13 @@ class FiberPhotometryApp:
                 self._log_extract(f"  Parameter detection: ERROR - {e}")
                 logger.exception("Error in parameter detection")
 
-            # Stash the cohort × module results so the Statistics tab can
-            # run group comparisons on demand (opt-in, only DG/LC need it).
-            # cohort_module_results is intentionally kept full (all cohorts) so
-            # the Stats tab can still re-run with any subset; the Extraction
-            # tab's comparison-cohorts selection only filters the plots above.
+            # Retain all cohort results for the Statistics tab. The Extraction
+            # tab's cohort selection filters plots, not these stored results.
             self.cohort_module_results = cohort_module_results
             self.cohort_groups_for_stats = cohort_groups
             self.stats_means_dir = means_dir
             self.stats_transients_dir = transients_dir
-            # Mirror the Extraction-tab selection into the Stats-tab boxes so
-            # the default Run there matches what was just plotted.
+            # Initialize statistics with the extraction cohort selection.
             def _sync_stats_checks():
                 for key, var in self.stats_cohort_vars.items():
                     var.set(key in comparison_cohorts)

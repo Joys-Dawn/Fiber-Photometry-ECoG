@@ -6,8 +6,7 @@ Independent-group comparisons (unpaired, between-subjects designs).
              with pairwise post-hoc tests (Welch t / Mann-Whitney U).
 
 Test choice is delegated to `decision.should_use_parametric` and applied
-once per measurement (same rule for the omnibus and post-hocs so the
-reader doesn't have to track two assumption decisions).
+once per measurement, for both omnibus and post-hoc tests.
 
 Raw p-values only - no multiple-comparison correction is applied here
 or by the runner.

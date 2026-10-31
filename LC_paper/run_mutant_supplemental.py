@@ -3,16 +3,16 @@ Supplemental: UEO-aligned mean plots for DG_GRABneMutant under
 preprocessing strategies A and B (the alternatives to the default C).
 
 For each strategy, writes:
-  supplemental/dg_grabne_mutant/strategy_<X>/
+  LC_paper/supplemental/dg_grabne_mutant/strategy_<X>/
     summary_UEO_aligned_traces.png           (zoomed in,  -150..+150 s)
     summary_UEO_aligned_traces_extended.png  (zoomed out, -150..+1000 s)
     UEO_aligned_traces_<cohort>.png          (per-cohort, both windows)
 
-Reuses load_sessions + preprocess_and_cache from the threshold sweeper
-purely for the loader plumbing — no stats, no transient detection.
+Uses load_sessions and preprocess_and_cache from the threshold sweep runner.
+No statistics or transient detection are performed.
 
 Usage:
-    python run_mutant_supplemental.py
+    python -m LC_paper.run_mutant_supplemental
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing import Dict, List
 import matplotlib
 matplotlib.use("agg")
 
-from run_threshold_sweep import load_sessions, preprocess_and_cache
+from LC_paper.run_threshold_sweep import load_sessions, preprocess_and_cache
 from fiber_photometry_ecog.analysis import compute_wide_ueo_triggered
 from fiber_photometry_ecog.core.cohort import classify_session
 from fiber_photometry_ecog.core.config import AnalysisConfig
@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 
 DATASET = Path("D:/Ephys_Data/Hyperthermia_seizure/DG_GRABneMutant")
-OUT_ROOT = Path("supplemental/dg_grabne_mutant")
+OUT_ROOT = Path(__file__).resolve().parent / "supplemental" / "dg_grabne_mutant"
 STRATEGIES = ("A", "B")
 
 
@@ -66,18 +66,13 @@ def run_one_strategy(sessions: List[Session], strategy: str,
                       s.mouse_id, s.heating_session, e)
             raise
 
-    # Group sessions by cohort. For DG_GRABneMutant these are
-    # GRABne-knockout mutant mice — the genotype labelling in the data log
-    # determines whether they land in DS_sz / DS_no_sz / WT_*.
+    # Group mutant-sensor recordings by data-log genotype and seizure outcome.
     cohort_groups: Dict[str, List[Session]] = {}
     for s in sessions:
         cohort_groups.setdefault(classify_session(s), []).append(s)
     log.info("  Cohorts: %s",
              {k: len(v) for k, v in cohort_groups.items()})
 
-    # Standard window (zoomed in, ±150 s) and extended window (-150..+1000)
-    # are computed independently so each mean/SEM only includes sessions
-    # whose recordings span that window.
     standard = {
         c: compute_wide_ueo_triggered(
             sessions=ss,

@@ -18,6 +18,7 @@ opto_cache/
 
 # Output
 Results/
+/LC_paper/results/
 results_ds_vs_wt/
 supplemental/
 Exploratory/
@@ -38,3 +39,9 @@ examples/
 .venv/
 venv/
 .collab/
+
+# LC example data and reference outputs
+/LC_paper/LC_GCaMP.zip
+/LC_paper/LC_GCaMP_sessions.csv
+/LC_paper/LC_GCaMP_expected_outputs.zip
+/LC_paper/LC_GCaMP/

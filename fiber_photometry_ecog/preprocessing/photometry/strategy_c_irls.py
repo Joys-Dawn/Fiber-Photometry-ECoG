@@ -1,23 +1,16 @@
 """
 Strategy C - IRLS / Keevers photometry preprocessing.
 
-Reproduces the pipeline from Keevers & Jean-Richard-dit-Bressel 2025
+Based on Keevers & Jean-Richard-dit-Bressel 2025
 (Neurophotonics 12(2):025003, PMID 40166421).
 Reference implementation: https://github.com/philjrdb/RegressionSim (IRLS_dFF.m)
 
-1. Butterworth low-pass (3 Hz) on both channels + mean correction
-2. IRLS robust regression with Tukey's bisquare weighting (c=1.4)
+1. Butterworth low-pass (default 3 Hz) on both channels + mean correction
+2. IRLS robust regression with Tukey's bisquare weighting (default c=1.4)
    and leverage-adjusted residuals (matching MATLAB robustfit)
    on the filtered signals directly (no biexponential detrending)
 3. dF/F = (filtered_signal - fitted_iso) / fitted_iso
 
-The regression captures both shared motion artifacts AND the shared
-photobleaching trend. The dF/F division normalizes for photobleaching
-because fitted_iso retains the original signal scale.
-
-Keevers 2025: "detrending and/or z-scoring experimental and isosbestic
-signals preclude their use in dF/F calculations as the original
-scale...is necessary."
 """
 
 import numpy as np
@@ -115,8 +108,7 @@ class IRLSStrategy:
         """Apply IRLS-based photometry preprocessing (Keevers 2025).
 
         Pipeline: low-pass filter → IRLS regression → dF/F.
-        No biexponential detrending - the regression captures shared
-        bleaching via the isosbestic channel, and dF/F normalizes it.
+        No biexponential detrending is applied.
 
         Parameters
         ----------
@@ -160,7 +152,7 @@ class IRLSStrategy:
         slope, intercept = coeffs
         fitted_iso = slope * filt_405 + intercept
 
-        # Guard: if fitted_iso crosses zero the dF/F division explodes.
+        # dF/F requires a positive fitted control signal.
         if np.any(fitted_iso <= 0):
             raise ValueError(
                 "IRLS fitted isosbestic crosses zero - dF/F is undefined. "
@@ -174,7 +166,6 @@ class IRLSStrategy:
         return PhotometryResult(dff=dff)
 
 
-# Module-level convenience for backward compatibility
 def preprocess_irls(
     signal_470: np.ndarray,
     signal_405: np.ndarray,

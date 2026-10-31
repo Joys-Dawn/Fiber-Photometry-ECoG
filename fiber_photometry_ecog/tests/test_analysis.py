@@ -1,5 +1,5 @@
 """
-Tests for Phase 4: Analysis Modules.
+Tests for analysis modules.
 
 Uses synthetic sessions with known signals and landmarks to verify
 each analyzer produces correct metrics.
@@ -126,7 +126,7 @@ def _make_transient(peak_time: float, amplitude: float = 1.0, half_width: float 
 
 
 # ---------------------------------------------------------------------------
-# 4.1 Cohort Characteristics
+# Cohort Characteristics
 # ---------------------------------------------------------------------------
 
 class TestCohortCharacteristics:
@@ -153,7 +153,7 @@ class TestCohortCharacteristics:
 
 
 # ---------------------------------------------------------------------------
-# 4.2 Baseline Transients
+# Baseline Transients
 # ---------------------------------------------------------------------------
 
 class TestBaselineTransients:
@@ -189,7 +189,7 @@ class TestBaselineTransients:
 
 
 # ---------------------------------------------------------------------------
-# 4.3 Pre-Ictal Mean Signal
+# Pre-Ictal Mean Signal
 # ---------------------------------------------------------------------------
 
 class TestPreictalMean:
@@ -227,7 +227,7 @@ class TestPreictalMean:
 
 
 # ---------------------------------------------------------------------------
-# 4.4 Pre-Ictal Transients
+# Pre-Ictal Transients
 # ---------------------------------------------------------------------------
 
 class TestPreictalTransients:
@@ -263,7 +263,7 @@ class TestPreictalTransients:
 
 
 # ---------------------------------------------------------------------------
-# 4.5 Ictal Mean Signal
+# Ictal Mean Signal
 # ---------------------------------------------------------------------------
 
 class TestIctalMean:
@@ -499,7 +499,7 @@ class TestIctalMean:
 
 
 # ---------------------------------------------------------------------------
-# 4.6 Ictal Transients
+# Ictal Transients
 # ---------------------------------------------------------------------------
 
 class TestIctalTransients:
@@ -531,7 +531,7 @@ class TestIctalTransients:
 
 
 # ---------------------------------------------------------------------------
-# 4.7 Postictal Recovery
+# Postictal Recovery
 # ---------------------------------------------------------------------------
 
 class TestPostictal:
@@ -560,7 +560,7 @@ class TestPostictal:
 
 
 # ---------------------------------------------------------------------------
-# 4.8 Spike-Triggered Averages
+# Spike-Triggered Averages
 # ---------------------------------------------------------------------------
 
 class TestSpikeTriggered:
@@ -600,11 +600,7 @@ class TestSpikeTriggered:
         assert sr.auc > 0
 
     def test_edge_spikes_nan_padded(self):
-        """Edge spikes that don't have a full window get NaN-padded
-        rather than silently dropped. The spike is still counted in
-        n_spikes so the user sees that it existed — that's the contract:
-        no session/event vanishes without trace.
-        """
+        """Edge spikes remain counted, with unavailable window samples NaN-padded."""
         s = _make_session(fs=100.0, duration_s=300.0)
         # Spike at 1.0s with 5s window → pre-spike window starts at -4.0s,
         # which is before recording start (fully clipped baseline).
@@ -612,7 +608,7 @@ class TestSpikeTriggered:
         config = AnalysisConfig(spike_triggered_window_s=5.0)
         result = compute_spike_triggered_average([s], [spike_times], config)
         sr = result.session_results[0]
-        # Old behaviour silently dropped the spike. New behaviour counts it.
+        # Incomplete recording coverage does not exclude the spike.
         assert sr.n_spikes == 1
         # And the trace has NaNs where data was unavailable.
         assert np.any(np.isnan(sr.mean_trace))

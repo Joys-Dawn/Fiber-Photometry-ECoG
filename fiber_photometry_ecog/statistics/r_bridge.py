@@ -1,20 +1,9 @@
 """
-R bridge: call lmerTest + emmeans via subprocess for LMM inference.
+LMM inference through R's lmerTest and emmeans packages.
 
-Ported from EphysAutomatedAnalysis with minor trimming. All R communication
-flows through this module. Each function writes a DataFrame to a temp CSV,
-generates an R script, runs it via ``Rscript.exe``, and parses structured
-stdout lines back into Python dataclasses.
-
-This module is responsible for:
- * Auto-detecting an R installation on Windows / macOS / Linux.
- * Auto-installing ``lmerTest`` and ``emmeans`` to the user library on
-   first use (no admin privileges required).
- * Caching availability across calls so we don't re-probe R on every fit.
-
-The caller (`compare_paired_lmm`) is responsible for the actual model
-choice and the fallback path when R is unavailable, the fit fails, or
-the model is reported singular.
+Adapted from EphysAutomatedAnalysis. Detects R, installs missing packages
+in the user library, and exchanges model data through temporary CSV files
+and Rscript output. R availability is cached; callers select fallback tests.
 """
 
 from __future__ import annotations
@@ -203,10 +192,7 @@ def _install_r_packages(rscript: str) -> bool:
             [rscript, "-e", script],
             capture_output=True, text=True, timeout=600,
         )
-        # install.packages spams stdout/stderr with progress lines, so the
-        # final `cat(TRUE/FALSE)` may not be the last whitespace-stripped
-        # line. Re-probe via a clean session instead of parsing the noisy
-        # install output.
+        # Verify installation in a fresh R process.
         if _r_packages_present(rscript):
             logger.info("R packages installed successfully.")
             return True
@@ -256,7 +242,7 @@ def is_r_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess plumbing
+# R subprocess execution
 # ---------------------------------------------------------------------------
 
 def _run_r_script(script: str, timeout: int = 60) -> Optional[str]:
@@ -274,10 +260,7 @@ def _run_r_script(script: str, timeout: int = 60) -> Optional[str]:
             capture_output=True, text=True, timeout=timeout,
         )
         if result.returncode != 0:
-            # Some native Windows R builds can crash during process teardown
-            # after the script has already completed successfully. Accept the
-            # structured output only when the script's final marker was
-            # emitted; otherwise a nonzero exit remains a hard failure.
+            # Require the completion marker before accepting output after an abnormal exit.
             if "STATUS: COMPLETE" in result.stdout:
                 logger.warning(
                     "Rscript exited with code %s after emitting complete "
@@ -345,11 +328,8 @@ def fit_lmm_pairwise(
 
     Returns
     -------
-    LMMResult on success, None on fit failure, convergence warning, or
-    singular fit (caller should fall back). ``LMMResult.singular`` is
-    True only in the path where the fit succeeded but lme4's
-    ``isSingular`` reports True; in our pipeline both that and
-    ``None`` are treated the same (loud-warning fallback).
+    LMMResult on success; None on execution or fit failure, a reported
+    convergence problem, or a singular fit.
     """
     csv_path = _write_temp_csv(data)
     try:

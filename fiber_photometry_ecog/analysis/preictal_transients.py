@@ -1,5 +1,5 @@
 """
-4.4 Pre-Ictal Transients.
+Pre-ictal transient summaries.
 
 Sliding-window moving averages of transient frequency, amplitude,
 half-width during heating.
@@ -53,7 +53,7 @@ class PreictalTransientGroupResult:
     amplitude_sem: np.ndarray
     half_width_mean: np.ndarray
     half_width_sem: np.ndarray
-    # Group-level temperature-binned (discrete 1C bins, spec row 14)
+    # Group-level temperature-binned summaries
     temp_bin_centers: np.ndarray
     temp_freq_mean: np.ndarray
     temp_freq_sem: np.ndarray
@@ -61,7 +61,7 @@ class PreictalTransientGroupResult:
     temp_amp_sem: np.ndarray
     temp_hw_mean: np.ndarray
     temp_hw_sem: np.ndarray
-    # Group-level temperature moving average (smooth, spec row 13)
+    # Group-level temperature moving averages
     temp_ma_centers: np.ndarray
     temp_ma_freq_mean: np.ndarray
     temp_ma_freq_sem: np.ndarray
@@ -117,8 +117,7 @@ def _sliding_window_transients_by_temp(
     """Sliding window over temperature axis (rel to seizure onset).
 
     For each temp window [c-w/2, c+w/2], frequency = events / time_in_window.
-    "Time in window" is the duration the smoothed temperature spends inside
-    that window during the heating phase, so frequency is in true Hz.
+    Time in window is measured in seconds during heating.
     """
     if session.processed is None or session.processed.temperature_smooth is None:
         return np.array([]), np.array([]), np.array([]), np.array([])
@@ -126,9 +125,6 @@ def _sliding_window_transients_by_temp(
     if fs is None or fs <= 0:
         return np.array([]), np.array([]), np.array([]), np.array([])
 
-    # No-temperature sessions (PTZ paradigm) have all-NaN temperature_smooth
-    # and ueo_temp=None. Skip the temperature-binned panel entirely - the
-    # caller treats empty arrays as "no data" and won't plot.
     if ueo_temp is None:
         return np.array([]), np.array([]), np.array([]), np.array([])
 
@@ -177,19 +173,14 @@ def _bin_transients_by_temperature(
     """Bin transient properties by temperature relative to seizure onset.
 
     Returns (frequency_per_bin, amplitude_per_bin, half_width_per_bin).
-    Frequency is count per bin (not normalized by time - consistent across sessions
-    since temperature bins represent similar temp ranges).
+    Frequency is an event count, not a time-normalized rate.
     """
     n_bins = len(bin_edges) - 1
     counts = np.zeros(n_bins)
     amp_sums = np.zeros(n_bins)
     hw_sums = np.zeros(n_bins)
 
-    # No-temperature paradigm (PTZ / opto): ueo_temp is None, every transient
-    # has temperature_at_peak=None. Return NaN per bin (frequency, amp, hw)
-    # so the group aggregator still gets a row of the right shape and the
-    # "is this cohort temperature-aware?" gate in group_plots.py can
-    # distinguish "no temp" from "zero transients in this bin".
+    # Missing temperature data is distinct from zero detected transients.
     if ueo_temp is None:
         return (np.full(n_bins, np.nan),
                 np.full(n_bins, np.nan),
@@ -213,8 +204,8 @@ def _bin_transients_by_temperature(
             hw_sums[idx] += t.half_width
 
     freq = counts
-    amp = np.where(counts > 0, amp_sums / counts, np.nan)
-    hw = np.where(counts > 0, hw_sums / counts, np.nan)
+    amp = np.divide(amp_sums, counts, out=np.full(n_bins, np.nan), where=counts > 0)
+    hw = np.divide(hw_sums, counts, out=np.full(n_bins, np.nan), where=counts > 0)
     return freq, amp, hw
 
 
@@ -263,7 +254,7 @@ def compute_preictal_transients(
         )
         all_moving_avgs.append(ma)
 
-        # Temperature-binned (discrete 1C bins, spec row 14)
+        # Temperature-binned summaries (discrete 1 C bins)
         freq, amp, hw = _bin_transients_by_temperature(
             heat_transients, ueo_temp, bin_edges,
         )
@@ -271,7 +262,7 @@ def compute_preictal_transients(
         all_temp_amp.append(amp)
         all_temp_hw.append(hw)
 
-        # Temperature moving average (smooth, spec row 13)
+        # Temperature moving averages
         _, tma_freq, tma_amp, tma_hw = _sliding_window_transients_by_temp(
             s, heat_transients, ueo_temp, heat_start, ueo_t,
             temp_range, tma_window_C, tma_step_C,
@@ -327,7 +318,11 @@ def compute_preictal_transients(
     temp_hw_mat = np.array(all_temp_hw)
 
     def _nanmean_sem(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        m = np.nanmean(mat, axis=0)
+        counts = np.sum(~np.isnan(mat), axis=0)
+        m = np.divide(
+            np.nansum(mat, axis=0), counts,
+            out=np.full(mat.shape[1], np.nan), where=counts > 0,
+        )
         sem = np.full(mat.shape[1], np.nan)
         for b in range(mat.shape[1]):
             col = mat[:, b]

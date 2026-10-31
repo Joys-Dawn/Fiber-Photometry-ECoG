@@ -76,10 +76,9 @@ def gmr_paired_test(
             notes=notes,
         )
 
-    # Mixed signs (or any zero): signed-log paired t-test. sign(x)*log1p(|x|)
-    # is continuous at 0 and preserves sign — sign-flip pairs register as
-    # large differences (correct biological direction). Effect estimate stays
-    # on the signed-log scale; GMR back-transform is not meaningful here.
+    # For mixed signs or zeros, use a paired t-test after sign(x)*log1p(|x|).
+    # This transform is continuous at zero and preserves sign. Report effects
+    # on the transformed scale, without a geometric-mean-ratio back-transform.
     sa = np.sign(a) * np.log1p(np.abs(a))
     sb = np.sign(b) * np.log1p(np.abs(b))
     diffs = sb - sa
@@ -118,7 +117,7 @@ def pair_arrays(
 
     `df_long` must have columns: mouse_id, heating_session, cohort, value.
     """
-    import pandas as pd  # local: keep the public surface dependency-free
+    import pandas as pd
     df = pd.DataFrame(df_long).dropna(subset=["value"]).copy()
     df = df[df["cohort"].isin([cohort_a, cohort_b])]
     if df.empty:

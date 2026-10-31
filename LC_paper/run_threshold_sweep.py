@@ -1,14 +1,13 @@
 """
-Threshold sweep: preprocess all sessions with strategies A, B, C,
-then run transient detection at multiple thresholds for each strategy.
+Transient-threshold sweep with strategy C by default; A, B, and D are optional.
 
 Preprocessed signals (dff, zdff_hpf, temperature) are cached per
-strategy+session so subsequent runs skip the expensive fitting step.
+strategy and session so subsequent runs reuse preprocessing.
 
 Usage:
-    python run_threshold_sweep.py              # full run
-    python run_threshold_sweep.py --test       # 1 file per dataset
-    python run_threshold_sweep.py --clear-cache  # wipe cache and recompute
+    python -m LC_paper.run_threshold_sweep
+    python -m LC_paper.run_threshold_sweep --test
+    python -m LC_paper.run_threshold_sweep --clear-cache
 """
 
 import argparse
@@ -97,7 +96,7 @@ THRESHOLDS = {
     "D": [0.01, 0.015, 0.02, 0.025, 0.03, 0.035],
 }
 
-# Default prominence per strategy — used for the final quality-check plots
+# Default prominence per strategy, used for the final quality-check plots
 # and for group analysis when a session has no chosen prominence.
 DEFAULT_PROMINENCES = {"A": 2.5, "B": 0.03, "C": 0.03, "D": 0.03}
 
@@ -105,7 +104,7 @@ DEFAULT_PROMINENCES = {"A": 2.5, "B": 0.03, "C": 0.03, "D": 0.03}
 def _default_prominence(strategy: str) -> float:
     return DEFAULT_PROMINENCES[strategy.upper()]
 
-CACHE_DIR = Path("sweep_cache")
+CACHE_DIR = Path(__file__).resolve().parent / "sweep_cache"
 
 # Mice excluded from spike-triggered analysis: ECoG-to-photometry
 # electrical crosstalk visible in both 470 and 405 channels at spike time.
@@ -116,7 +115,7 @@ STA_EXCLUDE = {
 
 
 # ---------------------------------------------------------------------------
-# Caching: store preprocessed signals so B/C don't refit every run
+# Preprocessed signal cache
 # ---------------------------------------------------------------------------
 
 def _cache_path(ds_key: str, strategy: str, session_key: str) -> Path:
@@ -199,10 +198,9 @@ def load_sessions(experiment_dir: Path, test_mode: bool = False,
                   has_temperature: bool = True):
     """Scan, read data log, and load all raw sessions.
 
-    `has_temperature` is passed through to `read_oep` — set False for the
-    PTZ-evoked paradigm (no thermistor connected), and downstream temperature
-    analyses will produce NaN values rather than reading garbage from a
-    floating ADC1 input.
+    `has_temperature` is passed to `read_oep`. Set it to False when no
+    thermistor was connected, as in PTZ recordings, to represent temperature
+    as NaN rather than interpreting an unrecorded ADC input.
     """
     exp_str = str(experiment_dir)
     discovered = scan_experiment_folder(exp_str)
@@ -221,10 +219,7 @@ def load_sessions(experiment_dir: Path, test_mode: bool = False,
         if log_lookup and (d["mouse_id"], d["date"]) in log_lookup:
             d.update(log_lookup[(d["mouse_id"], d["date"])])
         elif log_lookup and any(m == d["mouse_id"] for (m, _) in log_lookup):
-            # Opto logs commonly have one row per mouse (covering baseline and
-            # paired post-treatment sessions on different dates). Fall back to
-            # any matching mouse row so the per-mouse settings (stim_channel,
-            # include flag, exclusion reason) carry across to later dates.
+            # Opto logs may provide one row per mouse rather than per session.
             mouse_key = next(k for k in log_lookup if k[0] == d["mouse_id"])
             d.update(log_lookup[mouse_key])
             d["date"] = d.get("date")  # keep the per-session date
@@ -237,14 +232,6 @@ def load_sessions(experiment_dir: Path, test_mode: bool = False,
             d["exclusion_reason"] = None
             d["heating_start"] = None
 
-    # Opto sessions have no heating phase; the stim onset gets auto-detected
-    # later by preprocess_session and used as the baseline-end marker.
-    #
-    # Sessions are split into:
-    #   - excluded_by_log: include flag = False (the only legitimate "drop")
-    #   - loadable:        include=True AND has files AND has landmark anchor
-    #   - broken:          include=True but missing files or landmarks -> CRASH.
-    # We refuse to silently drop sessions marked include=True.
     candidates = [d for d in discovered if d["include"]]
     broken = []
     for d in candidates:
@@ -364,22 +351,16 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
         config.photometry.apply_hpf = False
         session.preprocessing_config = config
 
-        # Match pipeline.preprocess_session: every strategy uses baseline-
-        # window z-score (against the pre-heating window for hyperthermia,
-        # the first 100 s for opto). The cache stores raw dF/F, so changing
-        # the z-score formula doesn't invalidate cached files -- only the
-        # recompute logic here needs to mirror the pipeline.
+        # Recompute baseline z-scores from cached raw dF/F.
         dff_zscore = z_score_baseline(
             dff_raw, fs, session.landmarks.heating_start_time
         )
 
-        # No HPF/detrend: peak detection on z-scored dF/F, but
-        # prominence/amplitude still measured on raw dF/F so existing
-        # B/C thresholds (in raw dF/F units) keep their calibration.
+        # No detrending: detect on z-scores; measure amplitude on fractional dF/F.
         zdff_hpf = dff_zscore
         dff_for_detection = dff_raw
 
-        # ECoG filtering is cheap — run it for the plots
+        # ECoG filtering is recomputed on cache hits.
         from fiber_photometry_ecog.preprocessing.ecog import filter_ecog
         ecog_filt = filter_ecog(session.raw.ecog, fs, config.ecog)
 
@@ -395,9 +376,7 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
             fs=fs,
         )
 
-        # Populate temperature landmarks needed by analysis modules. Guard
-        # the no-temperature case (PTZ paradigm: temp_smooth is all-NaN);
-        # nanmean / nanargmax raise on all-NaN slices.
+        # Populate temperature landmarks only when temperature data is available.
         lm = session.landmarks
         baseline_window_s = lm.baseline_window_s
         if baseline_window_s is None and lm.heating_start_time is not None:
@@ -454,7 +433,7 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
 
         return zdff_hpf, dff_for_detection, temp_smooth, fs
 
-    # No cache — run full preprocessing
+    # Cache miss: run full preprocessing.
     config = PreprocessingConfig(
         photometry=PhotometryConfig(strategy=strategy),
     )
@@ -470,8 +449,7 @@ def preprocess_and_cache(session: Session, strategy: str, ds_key: str):
 
     dff_raw = proc.photometry.dff
     dff_zscore = proc.photometry.dff_zscore
-    # No HPF/detrend: peak detection on z-scored dF/F, prominence/amplitude
-    # still measured on raw dF/F so B/C thresholds keep their calibration.
+    # No detrending: detect on z-scores; measure amplitude on fractional dF/F.
     zdff_hpf = dff_zscore
     dff_for_detection = dff_raw
     proc.photometry.dff_hpf = dff_zscore
@@ -490,7 +468,7 @@ def run_sweep_for_session(session, strategy, ds_key, results_base):
             quality check/
                 <mouse>_S<n>_full_trace.png    (at default prominence)
                 <mouse>_S<n>_peri_ictal.png    (at default prominence)
-                <mouse>_S<n>_transients.png    (v3, all thresholds overlay)
+                    <mouse>_S<n>_transients.png    (all thresholds)
                 _sweep/<prom_label>/
                     <mouse>_S<n>_transients.csv
                     <mouse>_S<n>_full_trace.png
@@ -555,7 +533,7 @@ def run_sweep_for_session(session, strategy, ds_key, results_base):
     plot_sanity_check(session, str(qc_root), final_transients)
     plot_zoomed(session, str(qc_root))
 
-    # v3 transient review (all thresholds overlay) — directly in quality check/
+    # Overlay all transient thresholds in the quality-check directory.
     try:
         plot_transient_review(
             session, str(qc_root),
@@ -614,65 +592,38 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                         ictal_auc_clip_to_available=False,
                         ictal_positive_auc_landmarks=None,
                         ictal_extrema_min_duration_s=None):
-    """Run all 8 group analysis modules and generate group plots.
+    """Write group plots/CSVs and return {cohort: {module: group_result}}.
 
-    `ueo_y_lim` (tuple of (lo, hi)) hard-clamps the y-axis range on the
-    UEO-aligned trace plots so cohorts from different subfolders can be
-    compared directly. Pass None for autoscale (default).
+    Classifiers take a Session and return a cohort key. `cohort_classifier`
+    defaults to `classify_session`; `trace_cohort_classifier` defaults to it.
+    `module_cohort_classifiers` maps module names to scalar-result classifiers.
+    `module_scatter_options` and `module_stats_configs` map module names to
+    option dicts and StatsConfig objects, replacing `scatter_options` and
+    `stats_config` for that module. Module keys are analysis names such as
+    "Pre-ictal mean".
 
-    `ueo_y_ticks` optionally fixes the y tick locations on those traces.
+    `scatter_options` accepts connect_pairs, pair_line_color, pair_line_alpha,
+    and point_colors_by_id: {session_id or (cohort, session_id): color}, where
+    session_id is (mouse_id, heating_session). `ueo_trace_colors` is
+    {cohort: color}.
 
-    `ueo_standard_window_s` / `ueo_xlabel` / `ueo_title_suffix` retitle and
-    re-window the per-cohort UEO-aligned trace plots — used by the opto
-    pipeline to render the stim-aligned variant (-100..+100 s, "stim onset"
-    language). Defaults preserve the seizure-language behavior used by
-    every non-opto pipeline. `ueo_standard_window_s` also drives the
-    standard-window pre_s/post_s on `plot_ueo_aligned_heatmaps` so the
-    trace plot and the matching heatmap share an x-axis.
+    `within_cohort_paired_periods` is a list of dicts requiring module,
+    period_a, period_b, period_a_label, and period_b_label. Periods name scalar
+    measurements; labels provide output text. These tests require run_stats=True
+    and are appended to the mean-signal statistics CSV.
 
-    `ueo_heatmap_vlim_override`: forwards to `plot_ueo_aligned_heatmaps`
-    for cross-subfolder color-scale matching (e.g. the mutant subfolder
-    inheriting DG_GRABne's standard-window vlim). `ueo_heatmap_diagnostics`,
-    if a dict, captures the auto-computed vlim from this run so a downstream
-    run can reuse it as the override.
+    `ueo_standard_window_s` is (start, end) in seconds for traces and heatmaps;
+    `ueo_axes_size_inches` is their standard-panel data-area (width, height).
+    `ueo_heatmap_vlim_override` sets symmetric color limits (-vlim, +vlim).
+    `ueo_heatmap_diagnostics` is populated with the key "vlim_standard".
+    The two scale-exclusion lists omit cohorts from autoscaling, not plotting.
 
-    `cohort_classifier`: override the default genotype × seized cohort
-    classifier (used by the PTZ pooled run to drop every session into a
-    single "PTZ_pooled" bucket). Defaults to `classify_session`.
-
-    `is_opto=True` switches the per-session parameter-detection diagnostic
-    to opto-mode labels (pre-stim baseline / stim on / stim off / post-stim
-    detection window) and forces the max/min search window to 40 s post-stim
-    instead of [stim_on, stim_off]. `ueo_filename_prefix` swaps the
-    "UEO_aligned" prefix on the UEO trace + heatmap outputs ("stim_onset_aligned"
-    for opto). `ueo_dff_label` overrides the y/colorbar label (opto raw-ΔF/F
-    experiments pass "ΔF/F"). `ueo_yscale_exclude` /
-    `ueo_heatmap_exclude_from_vlim` are cohort lists that get rendered but
-    don't contribute to auto-y-lim / auto-vlim (e.g. Atomoxetine arm of
-    DG_local_release whose dynamic range would dominate otherwise).
-
-    `run_stats` controls the optional stats pass: when True, after all
-    modules finish, the per-cohort module results are handed to
-    statistics.run_group_comparisons, which writes one Stats_groups.csv
-    per output folder (means / transients). Default StatsConfig compares
-    DS_sz vs WT_no_sz with raw p-values — no MCC.
-
-    `within_cohort_paired_periods`: optional list of paired-period specs
-    that get appended to the same stats CSV. Each spec is a dict with
-    keys ``module`` / ``period_a`` / ``period_b`` / ``period_a_label`` /
-    ``period_b_label`` (e.g. ``{"module": "Pre-ictal mean",
-    "period_a": "heating_mean", "period_b": "ictal_mean",
-    "period_a_label": "Heating", "period_b_label": "Ictal"}``). Requires
-    ``run_stats=True``. Currently used by run_hyperthermia.py to add
-    within-cohort Heating-vs-Ictal paired stats to DG_GRABne.
-
-    `ictal_extrema_min_duration_s` optionally replaces sample-wise ictal
-    max/min with duration-qualified maximin/minimax values. Dataset runners
-    opt in explicitly; the app and all other runners retain sample extrema.
-
-    `ictal_positive_auc_landmarks` optionally names ictal-mean landmarks
-    whose AUC includes only signal above zero. Dataset runners opt in;
-    the app and all other runners retain signed net AUC.
+    `ictal_auc_per_landmark_override` is {landmark: seconds} and takes precedence
+    over duration-based windows. OFF defaults to 100 s; other landmarks use the
+    mean duration. Individual-duration mode uses each seizure's duration and
+    the seizure-group mean for controls. `ictal_positive_auc_landmarks` names
+    landmarks using positive-only AUC; other ictal options follow
+    `compute_ictal_mean`.
     """
     classifier = cohort_classifier or classify_session
     trace_classifier = trace_cohort_classifier or classifier
@@ -702,14 +653,12 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
             grouped.setdefault(active_classifier(session), []).append(session)
         return grouped
 
-    # Scalar and qualitative trace groupings can intentionally differ.
+    # Scalar and trace analyses support separate cohort classifiers.
     trace_cohort_groups = _group_sessions(trace_classifier)
 
-    # Global mean seizure duration: used as the AUC integration window for the
-    # ictal-mean triggered averages. Per spec D22, the AUC reflects actual
-    # seizure length rather than a fixed window. The helper crashes if no
-    # session has both ueo and off set - that's intentional, these analyses
-    # are seizure-centric so it should never happen.
+    # Mean seizure duration is the default AUC window. Session-specific
+    # durations and per-landmark overrides can replace it. Duration estimation
+    # requires at least one session with valid onset and offset landmarks.
     auc_end_s_by_session = None
     if ictal_auc_use_individual_seizure_durations:
         seizure_durations = [
@@ -751,12 +700,9 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         log.info("  Mean seizure duration (UEO->OFF) = %.2fs -- "
                  "using as triggered-AUC window", global_mean_duration)
 
-    # Per-cohort wide UEO triggered average — TWO computations, one per
-    # window. Both strict: a session only contributes to a window's mean if
-    # its recording actually spans that window. This keeps the standard
-    # ±150s mean from being hijacked by the 1-2 long-tailed sessions, and
-    # the extended -150..+1000s mean honestly reflects whatever N can span
-    # 1000s. The heatmap path (below) shows ALL sessions via NaN-padding.
+    # Compute standard and extended UEO-aligned averages separately.
+    # Incomplete windows are NaN-padded; pointwise means and SEM use the
+    # available observations, so contributing session counts can vary.
     wide_ueo: Dict[str, TriggeredAverage] = {}
     wide_ueo_extended: Dict[str, TriggeredAverage] = {}
     for cohort_name, cohort_sessions in trace_cohort_groups.items():
@@ -793,10 +739,6 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         ("Ictal transients", compute_ictal_transients, plot_ictal_transients, transients_dir),
         ("Postictal", compute_postictal, plot_postictal, means_dir),
         ("Spike-triggered averages", None, plot_spike_triggered, means_dir),
-        # Opto-specific: max/min/AUC over 40 s post-stim. The compute_fn
-        # checks for stim_raw on each session and returns an empty result
-        # for non-opto sessions, so the module is a no-op outside the
-        # opto pipeline.
         ("Opto response", compute_opto_response, plot_opto_response, means_dir),
     ]
 
@@ -820,10 +762,6 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         sta_spikes_by_cohort = {}
         for cohort_name, cohort_sessions in groups.items():
             if name == "Spike-triggered averages":
-                # Same exclusion as transient analyses: ECoG-to-photometry
-                # crosstalk corrupts both transient detection and the
-                # spike-triggered photometry mean (the artifact IS the
-                # signal here).
                 sta_excl = STA_EXCLUDE.get(ds_key, set())
                 sta_sessions = [s for s in cohort_sessions
                                 if s.include_for_transients
@@ -840,14 +778,8 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                 computed[cohort_name] = compute_spike_triggered_average(
                     sta_sessions, spike_times_list, config)
             elif name == "Ictal mean":
-                # Per spec D5: OFF AUC integrates over a fixed 100 s window
-                # rather than cohort mean seizure duration. Other landmarks
-                # (EEC/UEO/etc) use the global mean duration by default; opto
-                # pipelines override UEO to 40 s post-stim via
-                # `ictal_auc_per_landmark_override` because the default
-                # (global_mean_duration = stim_off − stim_on = 10 s) would
-                # only span the during-stim window, not the post-stim
-                # response we actually want to quantify.
+                # OFF defaults to 100 s; explicit landmark overrides take
+                # precedence over that default and the mean-duration window.
                 per_lm = {"OFF": 100.0}
                 if ictal_auc_per_landmark_override:
                     per_lm.update(ictal_auc_per_landmark_override)
@@ -928,11 +860,6 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
     if vm_path:
         log.info("  values_means CSV: %s", vm_path)
 
-    # UEO-aligned heatmaps split by cohort (Phase 4e). Takes the cohort
-    # session list directly so the heatmap can NaN-pad short-tailed rows
-    # for display, without contaminating the strict mean/SEM aggregation
-    # that drives the trace plot. Standard-window pre_s/post_s mirror the
-    # trace plot so the two visuals share an x-axis.
     if trace_cohort_groups:
         if ueo_standard_window_s is not None:
             hm_lo, hm_hi = ueo_standard_window_s
@@ -955,10 +882,6 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         for c, p in paths.items():
             log.info("  UEO heatmap [%s]: %s", c, p)
 
-    # Experimental (470) vs isosbestic (405) overlay
-    # (AUC_interictal_spikes_experimental_vs_isosbestic). Lives under
-    # plots_and_values_means/ alongside the other interictal-spikes AUC
-    # outputs — mirrors app.py's routing.
     if sta_cohort_sessions:
         p = plot_experimental_vs_isosbestic_spike_triggered(
             sta_cohort_sessions, sta_spike_times, means_dir
@@ -966,9 +889,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         if p:
             log.info("  470/405 spike overlay: %s", p)
 
-    # Parameter-detection diagnostic per session: bin windows + means + delta
-    # annotation overlaid on the trace, so every session's values are
-    # auditable by eye.
+    # Per-session diagnostics show measurement windows, means, and extrema.
     n_done = 0
     for cohort_name, cohort_sessions in trace_cohort_groups.items():
         for s in cohort_sessions:
@@ -987,10 +908,8 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                 n_done += 1
     log.info("  Parameter detection: wrote %d session plots", n_done)
 
-    # Optional 2-way unpaired stats (DS_sz vs WT_no_sz by default), per the
-    # StatsConfig defaults. Writes Stats_groups.csv into means/ and
-    # transients/ alongside the plots. Only enabled for datasets where the
-    # stats are meaningful (e.g. plain DG / LC hyperthermia) — see callers.
+    # Optional unpaired comparisons use the supplied statistics configuration
+    # and write tables beside the mean-signal and transient plots.
     if run_stats:
         from fiber_photometry_ecog.statistics import (
             run_group_comparisons,
@@ -1009,10 +928,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
                 period_a_label=spec["period_a_label"],
                 period_b_label=spec["period_b_label"],
             )
-            # `_extract_*` folder is looked up from the extractor registry
-            # for the given module — hard-coded here because both existing
-            # specs (Pre-ictal mean / Ictal mean) land in "means" and that's
-            # the only folder relevant for within-cohort period tests today.
+            # Configured paired-period tests use mean-signal measurements.
             additional_rows_by_folder.setdefault("means", []).extend(extra)
             log.info("  Within-cohort paired [%s: %s vs %s]: %d cohort rows",
                      spec["module"], spec["period_a_label"],
@@ -1029,9 +945,7 @@ def run_group_analysis(sessions, strategy, ds_key, results_base,
         for folder, p in out_paths.items():
             log.info("  Stats [%s]: %s", folder, p)
 
-    # Expose for callers (e.g. opto driver) that want to run extra stats
-    # passes — paired CPP vs baseline comparisons, etc. — using the same
-    # extractor pipeline as the standard independent-groups stats.
+    # Return module results for additional caller-specific comparisons.
     return cohort_module_results
 
 
@@ -1091,7 +1005,7 @@ def main():
                     log.info("  Patched temp: %s / %s / %s", ds_key, strategy, sk)
         log.info("Temperature refresh complete.")
 
-    results_root = Path("results")
+    results_root = Path(__file__).resolve().parent / "results"
 
     for ds_key, ds_path in DATASETS.items():
         log.info("=" * 60)
@@ -1115,10 +1029,7 @@ def main():
                          i + 1, len(sessions), session.mouse_id, strategy)
                 run_sweep_for_session(session, strategy, ds_key, results_base)
 
-            # Group analysis with default threshold for this strategy.
-            # Re-apply default-prominence transient detection (sweep
-            # iterations above may have left the session with a different
-            # threshold's transient list).
+            # Restore the default threshold after the sweep.
             log.info("  Running group analysis for strategy %s ...", strategy)
             default_tc = _make_transient_config(strategy, _default_prominence(strategy))
             for session in sessions:

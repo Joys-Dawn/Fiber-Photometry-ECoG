@@ -73,24 +73,13 @@ def process_temperature(
     else:
         temperature_smooth = temperature_c.copy()
 
-    # Mask raw-signal dropouts: thermistor disconnects produce brief rail
-    # swings that survive smoothing as excursions far outside the mouse's
-    # physiological range. NaN them so plots show gaps and downstream code
-    # can skip them.
+    # Mask thermistor dropouts outside the valid temperature range.
     PHYS_LO, PHYS_HI = 20.0, 44.0
     dropout_mask = (temperature_smooth < PHYS_LO) | (temperature_smooth > PHYS_HI)
     if dropout_mask.any():
         temperature_smooth = temperature_smooth.copy()
         temperature_smooth[dropout_mask] = np.nan
 
-    # Landmarks (nan-aware so dropouts in the baseline window don't contaminate).
-    # If a session-specific baseline_window_s = (start_s, end_s) is provided
-    # (from the data log), use that. Otherwise fall back to the first
-    # baseline_duration_s seconds of the recording.
-    #
-    # When the recording has no temperature probe (PTZ paradigm), the entire
-    # `temperature_smooth` array is NaN. np.nanmean / np.nanargmax raise on
-    # all-NaN slices, so explicitly check before calling them.
     all_nan = bool(np.all(np.isnan(temperature_smooth)))
 
     if all_nan:

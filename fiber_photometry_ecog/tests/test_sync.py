@@ -1,5 +1,5 @@
 """
-Tests for Phase 1: Data Loading & Synchronization.
+Tests for data loading and synchronization.
 
 Tests the sync engine with synthetic TTL signals containing known drift.
 Also tests PPD reader against real .ppd files if available.

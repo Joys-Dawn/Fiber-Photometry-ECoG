@@ -1,8 +1,7 @@
 """
 Configuration dataclasses for the preprocessing and analysis pipeline.
 
-All scientific parameters are exposed here so that every analysis is
-fully reproducible from a single config object.
+Shared parameter defaults; runners also define experiment-specific settings.
 """
 
 from dataclasses import dataclass, field
@@ -38,15 +37,11 @@ class PhotometryConfig:
 
     # Post-processing
     baseline_end_s: Optional[float] = None  # seconds; if None, must be set per session (heating start)
-    # Strategy A detrending: HPF (per Chandni's detect_transients.m)
+    # Strategy A detrending: high-pass filtering
     hpf_cutoff: float = 0.01       # Hz, Butterworth HPF for Strategy A
     hpf_order: int = 2             # Butterworth order
     # Strategy B/C detrending: moving-average subtraction (per Wallace 2025)
     detrend_window_s: float = 100.0  # seconds; moving-average window
-    # HPF/detrend is OFF by default: peak detection runs on the z-scored dF/F
-    # directly, with prominence/amplitude measured on raw dF/F so threshold
-    # calibrations stay consistent. Set True only if you need the Strategy-A
-    # HPF or Strategy-B/C moving-average detrend.
     apply_hpf: bool = False
 
 
@@ -65,24 +60,15 @@ class SpikeDetectionConfig:
 
 @dataclass
 class TransientConfig:
-    """Transient detection parameters.
-
-    method="prominence": scipy find_peaks with prominence (Chandni's original).
-    method="wallace": two-step - height gate then prominence filter
-        (Wallace 2025 ProM: findpeaks height>=1.0, then prominence>=2).
-    """
+    """Transient detection parameters."""
     method: str = "prominence"       # "prominence" or "wallace"
-    min_prominence: Optional[float] = 1.0   # prominence in z-score units (None to disable)
-    min_height: Optional[float] = None      # height in z-score units (None to disable)
-    max_width_s: float = 8.0         # seconds (prominence method only, per Chandni)
+    # Prominence units: z-score for "prominence", fractional dF/F for "wallace".
+    min_prominence: Optional[float] = 1.0   # None disables the prominence threshold
+    min_height: Optional[float] = None      # height in z-score units
+    max_width_s: float = 8.0         # maximum half-prominence width, seconds
     trough_window_s: float = 2.5     # seconds each side of peak
 
 
-# Strategy-specific defaults.
-# A: Chandni's original - prominence=1.0 on z-scored HPF signal (per detect_transients.m)
-# B/C: Wallace 2025 ProM - height>=1.0 on z-scored, then prominence on raw dF/F.
-#   Wallace used prominence=2.0 but on %dF/F in percentage scale (dLight sensor).
-#   Our dF/F is fractional (0.08 = 8%), so 0.02 = 2 percentage points equivalent.
 TRANSIENT_CONFIGS = {
     "A": TransientConfig(min_prominence=1.0),
     "B": TransientConfig(method="wallace", min_height=1.0, min_prominence=0.02),
@@ -107,10 +93,8 @@ class TemperatureConfig:
     baseline_duration_s: float = 60.0  # seconds from start to compute baseline temp
 
 
-# Date-range calibrations supplied by Meiling for rigs without a NI-DAQ.
-# Originals were given as T = a * V_volts + b (temperature_probe = voltage in V).
-# Stored here as (start_date, end_date, slope_per_mV, intercept_C). Dates are
-# inclusive, ISO format (YYYY-MM-DD). None means open-ended.
+# (start_date, end_date, slope_per_mV, intercept_C); inclusive ISO dates.
+# None denotes an open-ended date range.
 MEILING_RIG_CALIBRATIONS = [
     (None,         "2024-03-13",  0.08817, 375.77),   # Before 2024-03-14
     ("2024-03-14", "2024-05-23", -0.10342,   9.69),   # 2024-03-14 to 2024-05-23
@@ -124,7 +108,7 @@ def lookup_meiling_calibration(recording_date: str) -> tuple[float, float]:
     """Return (slope_per_mV, intercept_C) for a Meiling rig recording date.
 
     `recording_date` is a YYYY-MM-DD string. Raises ValueError if no range
-    matches (shouldn't happen for in-bounds dates).
+    matches.
     """
     for start, end, slope, intercept in MEILING_RIG_CALIBRATIONS:
         if (start is None or recording_date >= start) and \
@@ -151,17 +135,13 @@ class PreprocessingConfig:
 
 @dataclass
 class AnalysisConfig:
-    """Parameters for all Phase 4 analysis modules."""
+    """Analysis parameters."""
     # Temperature binning (used by preictal_mean, preictal_transients, postictal)
     temp_bin_size: float = 1.0              # degrees C
     # Triggered averages (ictal landmark: EEC, UEO, OFF, etc.)
     triggered_window_s: float = 65.0        # seconds each side of event
     triggered_baseline_start_s: float = 5.0 # baseline begins this many seconds before event
     triggered_baseline_end_s: float = 1.0   # baseline ends this many seconds before event
-    # Triggered-AUC integration window is the mean seizure duration computed
-    # at the driver level (see analysis.ictal_mean.mean_seizure_duration);
-    # no static default lives in the config.
-    # PSTH
     psth_bin_size_s: float = 10.0           # seconds per bin
     psth_window_s: float = 60.0             # seconds each side of UEO
     # Moving averages (sliding window for transient properties)
@@ -173,5 +153,5 @@ class AnalysisConfig:
     spike_triggered_window_s: float = 30.0  # seconds each side of spike
     spike_triggered_baseline_start_s: float = 5.0  # baseline begins this many seconds before event
     spike_triggered_baseline_end_s: float = 1.0    # baseline ends this many seconds before event
-    spike_triggered_auc_end_s: float = 30.0         # AUC integration window: 0 to this many seconds post-event (per spec)
+    spike_triggered_auc_end_s: float = 30.0         # AUC integration window: seconds after event onset
     wide_triggered_window_s: float = 150.0          # per-cohort UEO plot (seconds each side)

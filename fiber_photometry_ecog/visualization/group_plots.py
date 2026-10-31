@@ -16,7 +16,7 @@ matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from . import _style  # applies shared rcParams on import; also exports canonical figsizes
+from . import _style
 from ..analysis.cohort_characteristics import CohortGroupResult as CohortResult
 from ..analysis.baseline_transients import BaselineTransientGroupResult
 from ..analysis.preictal_mean import PreictalMeanGroupResult
@@ -70,7 +70,7 @@ def _any_temperature_data(results) -> bool:
     (PreictalMeanGroupResult, PreictalTransientGroupResult).
     """
     for r in results.values():
-        # Group-level temp_*-prefixed arrays — covers preictal mean/transient
+        # Group-level temp_*-prefixed arrays cover preictal mean/transient
         # GroupResults where per-session scalars don't exist but group-level
         # arrays are computed from per-session temperature traces.
         for attr in dir(r):
@@ -111,7 +111,7 @@ def _ordered(results: Dict) -> Dict:
 
 
 def _seizure_cohort_key(results: Dict) -> str:
-    """Return the seized cohort across legacy and pooled group names."""
+    """Return a seizure cohort from genotype-specific or pooled groups."""
     fallback = next(iter(results.keys()))
     return next(
         (
@@ -140,11 +140,7 @@ def _is_nan_like(v) -> bool:
 
 
 def _save_csv(path: str, header: list, rows: list) -> None:
-    # Drop columns whose every row value is NaN-like — those columns carry
-    # no information for this run (e.g. temperature-derived measurements
-    # in an opto run where no thermistor was connected). Metadata columns
-    # like `cohort` / `mouse_id` are kept automatically because their
-    # values are non-NaN strings.
+    # Omit columns containing only NaN-like values; retain populated metadata.
     if rows:
         keep = [
             ci for ci in range(len(header))
@@ -229,12 +225,8 @@ def _scatter_mean_sem(
 ) -> None:
     """Pure scatter plot: jittered per-session dots, mean tick, SEM whiskers.
 
-    Per spec text: "scatter plot w/ means +/- SEM".
     cohorts: {name: (per_session_values, mean, sem[, session_ids])}
-    `xtick_rotation`: degrees to rotate x-tick labels. Default None applies
-    45° always (matches slice-physiology house style — keeps long cohort
-    labels like "1 Hz DG", "20 Hz DG\\n+ Atomoxetine" from crowding the
-    axis even at the short single-line hyperthermia/PTZ names).
+    `xtick_rotation`: x-tick label rotation in degrees; None uses 45 degrees.
     """
     labels = [_label(k) for k in cohorts.keys()]
     if xtick_rotation is None:
@@ -299,12 +291,7 @@ def _line_sem(ax, x, mean, sem, color, label) -> None:
 
 
 def _legend_above(ax, ncol: Optional[int] = None, y_offset: float = 1.02) -> None:
-    """Move the legend out of the data area to sit centered above the axes.
-
-    Mirrors the "figure labels above (rather than within) the plots" request
-    from the analysis spec. Pass `y_offset` > 1.02 when the panel also has a
-    title - the legend then sits above the title rather than overlapping it.
-    """
+    """Center the legend above the axes."""
     handles, labels = ax.get_legend_handles_labels()
     if not labels:
         return
@@ -325,21 +312,14 @@ def _save_standalone_scatter(cohorts: Dict[str, tuple], ylabel: str, path: str,
                              zero_line: bool = False) -> None:
     """Save a single-panel cohort scatter (mean ± SEM) at `path`.
 
-    Used for plots that double as a panel in a multi-panel figure AND as a
-    standalone summary plot the user wants to drop directly into slides.
-
-    Figure width scales with cohort count when there are more than the
-    default-FIG_SCATTER 2 cohorts — keeps rotated multi-line labels from
-    colliding (e.g. "20 Hz DG\\n+ Atomoxetine" needs ~5 inches at 40pt).
+    Figure width increases with cohort count above the two-cohort base size.
 
     `xtick_rotation`: pass-through to `_scatter_mean_sem`. None (default)
-    lets that helper auto-rotate multi-line opto labels.
+    applies the default 45-degree rotation.
     `title`: retained for caller compatibility; publication export suppresses it.
     """
     n_cohorts = max(len(cohorts), 1)
     base_w, base_h = _style.FIG_SCATTER
-    # Slim 2.5"/cohort + 3" pad (mirrors the slice-physiology house style):
-    # keeps the scatter clouds tight enough to read as a vertical rectangle.
     requested_width = float((scatter_options or {}).get("standalone_width", 0.0))
     width = max(base_w, 3.0 + 2.5 * n_cohorts, requested_width)
     fig, ax = plt.subplots(figsize=(width, base_h))
@@ -370,12 +350,8 @@ def _save_standalone(draw_fn, path: str, figsize=None, axes_size_inches=None) ->
     Returns the saved path. The draw_fn is responsible for axis content;
     publication export removes titles and legends.
 
-    Default figsize is FIG_WIDE — the safe aspect ratio for trace/curve
-    plots, which are the majority of callers. Scatter-shaped panels
-    (cohort × metric bars/points) must pass an explicit `figsize` using
-    `_scatter_figsize(n_cohorts)` so labels don't get squished at 3+
-    cohorts; FIG_SCATTER's fixed 6" width was the previous default and
-    caused label cutoff whenever cohort count exceeded ~2.
+    The default size is FIG_WIDE. Scatter panels pass
+    `_scatter_figsize(n_cohorts)` to scale width with the number of cohorts.
     """
     if figsize is None:
         figsize = _style.FIG_WIDE
@@ -391,10 +367,7 @@ def _save_standalone(draw_fn, path: str, figsize=None, axes_size_inches=None) ->
 def _scatter_figsize(n_cohorts: int) -> tuple:
     """Scatter figsize scaled to cohort count.
 
-    Same width formula as `_save_standalone_scatter`: base FIG_SCATTER
-    height with a width of `max(FIG_SCATTER[0], 3.0 + 2.5 * n_cohorts)`,
-    so 3+ cohorts get enough horizontal room for their rotated tick
-    labels without collapsing the scatter clouds into each other.
+    Uses FIG_SCATTER height and max(FIG_SCATTER[0], 3.0 + 2.5 * n_cohorts) width.
     """
     n = max(int(n_cohorts), 1)
     base_w, base_h = _style.FIG_SCATTER
@@ -417,9 +390,7 @@ def plot_cohort_characteristics(
     name_prefix: str = "",
     scatter_options: Optional[dict] = None,
 ) -> str:
-    """Three standalone files (no combo): Cohort_characteristics_baseline_temp.png,
-    _seizure_threshold.png, _seizure_duration.png. The previous composite
-    cohort_characteristics.png has been retired per request.
+    """Write standalone baseline-temperature, seizure-threshold, and duration plots.
     """
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
@@ -438,8 +409,7 @@ def plot_cohort_characteristics(
                              s.baseline_temp, s.seizure_threshold_temp,
                              s.seizure_duration_s])
 
-    # Mouse body temperature physiologically bounded - fix axes so cohort
-    # plots are visually comparable across batches.
+    # Shared temperature limits across cohort plots.
     TEMP_YLIM = (35.0, 43.0)
 
     def _draw_baseline(ax):
@@ -485,10 +455,7 @@ def plot_cohort_characteristics(
             ax.set_ylim(*fixed_ylim)
         ax.spines[["right", "top"]].set_visible(False)
 
-    # Standalone per-panel exports (combo cohort_characteristics.png retired
-    # per spec - the 3 individual panels are the canonical view now).
-    # Skip the temperature panels when no session has thermistor data
-    # (e.g. opto runs) — empty placeholders just clutter the output folder.
+    # Export individual panels; omit temperature panels when data is absent.
     has_temp = _any_temperature_data(results)
     baseline_path = None
     if has_temp:
@@ -602,8 +569,7 @@ def _grouped_scatter_mean_sem(
     period_data: list (one entry per period) of {cohort_name: (vals, mean, sem)}.
     All periods use the same set of cohorts. Cohorts are clustered within each
     period; periods are spaced `period_spacing` units apart on the x-axis
-    (default 1.8 - wider than the cohort cluster width so periods read as
-    distinct visual groups).
+    (default 1.8).
     """
     cohorts = list(period_data[0].keys()) if period_data else []
     n_cohorts = max(len(cohorts), 1)
@@ -766,12 +732,6 @@ def plot_preictal_mean(
     _save_publication_figure(fig, path)
     plt.close("all")
 
-    # Companion standalone plots that compare heating-phase windows to
-    # ictal. These are temperature-paradigm constructs (early/late heat,
-    # immediate-preictal-end-of-heat); the windows collapse to zero length
-    # in non-thermal paradigms (opto: heating_start == ueo_time), making
-    # every value NaN and the rendered figure blank. Gate on the same
-    # has-temperature signal that controls vs_temp plots.
     if _any_temperature_data(line_results):
         _plot_paired_by_cohort(
             results,
@@ -790,9 +750,7 @@ def plot_preictal_mean(
             ),
         )
 
-        # By-period grouped scatters (companion to by-cohort views).
-        # Scatter-shaped, so use the cohort-scaled scatter figsize rather
-        # than the default trace-oriented FIG_WIDE.
+    # By-period grouped scatters.
         _save_standalone(
             lambda ax: _grouped_scatter_mean_sem(
                 ax, [heating_data, ictal_data], ["Heating", "Ictal"],
@@ -810,11 +768,7 @@ def plot_preictal_mean(
             figsize=_grouped_scatter_figsize(len(results), 3),
         )
 
-        # Single-period cohort scatter for the end-of-late-heat ("immediate
-        # preictal") window. Note: Mean_values_ictal.png is owned by
-        # plot_ictal_mean (the canonical source for the ictal mean metric);
-        # we deliberately don't write it here to avoid silent overwrites if
-        # the two modules ever drift.
+        # Immediate-preictal scatter; plot_ictal_mean owns Mean_values_ictal.png.
         _save_standalone_scatter(
             elh, "Immediate preictal\n(z_ΔF/F)",
             os.path.join(output_dir, "Mean_values_immediate_preictal.png"),
@@ -822,8 +776,7 @@ def plot_preictal_mean(
             zero_line=True,
         )
 
-    # Mean signal vs temperature during heating (panel 3) — only emit when
-    # any cohort actually has finite temperature data.
+    # Plot signal versus temperature only when temperature data is available.
     if _any_temperature_data(line_results):
         def _draw_vs_temp_heating(ax):
             for name, r in line_results.items():
@@ -838,10 +791,6 @@ def plot_preictal_mean(
                          os.path.join(output_dir, "Mean_values_vs_temp_heating.png"),
                          figsize=_style.FIG_WIDE)
 
-    # Per-session preictal columns are written by the consolidator into
-    # values_means_<name_prefix>.csv (see write_values_means below) rather
-    # than as a standalone preictal_mean.csv -- ictal_mean and postictal
-    # share the same row keys, so a single wide CSV is cleaner.
     return path
 
 
@@ -855,11 +804,9 @@ def _build_ueo_heatmap_data(
     """Per-session UEO-aligned matrix for the heatmap, padded with NaN
     outside each session's recording.
 
-    The aggregation path (`compute_wide_ueo_triggered`) stays strict so
-    cohort mean/SEM only reflect sessions that span the requested window.
-    The heatmap, by contrast, just displays each row to whatever extent
-    its recording covers - NaN cells render as transparent via the
-    colormap's `set_bad`. Different concerns, separate code path.
+    NaN cells render transparently via the colormap's `set_bad` setting.
+    Mean/SEM traces are computed separately by `compute_wide_ueo_triggered`,
+    which also NaN-pads incomplete windows and uses pointwise coverage.
 
     Returns (matrix, time_axis, session_labels).
     """
@@ -926,49 +873,11 @@ def plot_ueo_aligned_heatmaps(
     exclude_from_vlim: Optional[List[str]] = None,
     standard_axes_size_inches: Optional[tuple] = None,
 ) -> Dict[str, str]:
-    """UEO-aligned per-session heatmaps, one PNG per cohort.
+    """Plot standard and extended per-session heatmaps by cohort.
 
-    Each row is a session in that cohort; cells past the end of the
-    recording render as transparent gaps. Stats (the wide UEO mean ±
-    SEM line) live in `compute_wide_ueo_triggered` and remain strict -
-    this heatmap-only path doesn't feed those aggregations.
-
-    Generates TWO sets so each can sit under the matching traces plot:
-      standard  → x-axis  -pre_s..+post_s          (-150..+150 by default)
-      extended  → x-axis  -pre_s..+1000s           (long tail past UEO)
-
-    Files written:
-      UEO_aligned_heatmap_DS_sz[_extended].png
-      UEO_aligned_heatmap_DS_nosz[_extended].png
-      UEO_aligned_heatmap_WT[_extended].png
-
-    The color scale is global across all cohorts within each window so
-    the cohort plots are directly visually comparable. Diverging RdBu_r
-    colormap; vlim is clipped at the 98th percentile of |values| so
-    outlier sessions don't compress the dynamic range. Returns
-    {cohort_key: path_of_standard_window}.
-
-    `vlim_override`: if set, force vmin/vmax to ±this value in both windows
-    (instead of computing from the data). Used for cross-subfolder
-    color-scale matching (e.g. DG_GRABneMutant inheriting DG_GRABne's range
-    so the two are directly comparable). `diagnostics_out`, if provided, is
-    populated with the standard-window vlim that was actually used — pass
-    an empty dict to capture-and-reuse this value on a downstream call.
-
-    `filename_prefix` swaps the "UEO_aligned" prefix in the saved filenames
-    + axes title (opto pipelines pass "stim_onset_aligned" so the visual
-    distinction between seizure-onset and stim-onset experiments is
-    immediate). `xlabel` retitles the time-axis label likewise. `dff_label`
-    overrides the colorbar label — useful when an experiment renders raw
-    ΔF/F rather than the default z-scored signal.
-
-    `exclude_from_vlim`: cohort keys to skip when computing the auto vlim,
-    while still rendering them with the resulting color scale. Used when
-    one cohort's dynamic range would dominate the others (e.g. the
-    Atomoxetine arm of DG_local_release).
-
-    `standard_axes_size_inches` fixes the standard-window data rectangle,
-    leaving label and colorbar space outside it. Extended plots are unchanged.
+    Color limits are shared across cohorts within each window. diagnostics_out
+    receives the standard-window color limit; the return value maps cohorts
+    to standard-window image paths.
     """
     if exclude_from_vlim is None:
         exclude_from_vlim = []
@@ -976,10 +885,6 @@ def plot_ueo_aligned_heatmaps(
     import matplotlib.cm as cm
 
     os.makedirs(output_dir, exist_ok=True)
-    # File naming convention: keep the historical short tags for the four
-    # canonical hyperthermia cohorts (DS_nosz/WT/etc. without the trailing
-    # underscore), and fall back to the raw cohort key for everything else
-    # (e.g. opto cohorts like "10HZ_DG_CPP").
     canonical_fname = {
         "DS_sz": (f"{filename_prefix}_heatmap_DS_sz.png",
                   f"{filename_prefix}_heatmap_DS_sz_extended.png"),
@@ -1011,8 +916,7 @@ def plot_ueo_aligned_heatmaps(
         (-pre_s, 1000.0, 1),     # extended (-150..+1000)
     ]
 
-    # Pre-build each cohort's (matrix, time_axis, labels) at each window
-    # so we can compute a global cmap range across cohorts within window.
+    # Collect cohort data before setting shared color limits for each window.
     per_window_cohort_data: List[Dict[str, tuple]] = [{}, {}]
     for x_lo, x_hi, w_idx in WINDOWS:
         win_post = x_hi  # x_hi is the post-event extent for this window
@@ -1026,16 +930,10 @@ def plot_ueo_aligned_heatmaps(
 
     saved: Dict[str, str] = {}
 
-    # Diverging colormap (RdBu_r: blue=negative, white=zero, red=positive)
-    # - signed data reads more clearly than under sequential viridis. NaN
-    # cells stay transparent so missing-recording tails appear as gaps.
+    # Signed color scale with transparent NaN cells.
     cmap = cm.get_cmap("RdBu_r").copy()
     cmap.set_bad(color="white", alpha=0.0)
 
-    # Clip the color range at a percentile so a single outlier session
-    # doesn't compress everyone else into the middle band. 98th-percentile
-    # of |values| means at most 2% of cells saturate to the colormap ends,
-    # which trades a little outlier fidelity for a lot more contrast.
     CLIP_PERCENTILE = 98.0
 
     for x_lo, x_hi, w_idx in WINDOWS:
@@ -1043,21 +941,15 @@ def plot_ueo_aligned_heatmaps(
         if not cohort_data:
             continue
         if vlim_override is not None:
-            # Cross-subfolder match: caller has handed in the vlim picked
-            # by a previous (reference) run so this run's heatmap renders
-            # on the same color scale.
+            # Use the caller's shared color limit.
             vlim = float(vlim_override)
         else:
-            # Global symmetric scale across all cohorts in this window
-            # (NaN-aware so missing tails don't poison vlim). Cohorts in
-            # exclude_set still render with the resulting scale, but their
-            # values don't contribute to the vlim — keeps a high-range
-            # arm (e.g. Atomoxetine) from dominating the rest.
+            # Compute a shared symmetric scale from finite values. Excluded
+            # cohorts are plotted but do not contribute to scale estimation.
             scale_data = [m[0].ravel() for ck, m in cohort_data.items()
                           if m[0].size and ck not in exclude_set]
             if not scale_data:
-                # Every contributing cohort was excluded — fall back to
-                # whatever data is available so the plot still renders.
+                # If all contributing cohorts were excluded, use all data.
                 scale_data = [m[0].ravel() for m in cohort_data.values()
                               if m[0].size]
             all_vals = (np.concatenate(scale_data) if scale_data
@@ -1117,7 +1009,7 @@ def _add_nested_period_labels(
     period_labels,
     cohort_labels,
 ) -> list:
-    """Add rotated period sublabels above clearly separated cohort labels."""
+    """Add rotated period sublabels above cohort labels."""
     texts = []
     for cohort_center in cohort_centers:
         for period_offset, period_label in zip(period_offsets, period_labels):
@@ -1224,9 +1116,8 @@ def plot_preictal_transients(
 ) -> str:
     """Pre-ictal transient properties as temperature-aligned moving averages.
 
-    Per spec, the legacy "time from heating start" moving averages and the
-    "temp-binned" panels are not part of the current output - only the
-    temperature moving averages (rel. to seizure onset) are retained.
+    Plots temperature moving averages relative to seizure onset, without
+    time-aligned or temperature-binned panels.
 
     Also writes 3 standalone files (Transient_frequency_moving_average_vs_temp_heating.png,
     _amplitude_*.png, _halfwidth_*.png).
@@ -1295,8 +1186,7 @@ def plot_ictal_mean(
     trace_results: Optional[Dict[str, IctalMeanGroupResult]] = None,
     dff_label: Optional[str] = None,
 ) -> str:
-    """Row 18: seizure mean scatter. Row 19: preictal->ictal Δ scatter.
-    Row 20: per-landmark triggered averages + AUC scatter.
+    """Plot seizure means, preictal-to-ictal changes, and landmark-aligned AUCs.
 
     Layout: left column = scatters (seizure mean, delta), right side = vertical
     stack of (triggered average trace + AUC scatter) per landmark.
@@ -1319,7 +1209,7 @@ def plot_ictal_mean(
         return f"AUC\n({signal_label} × s)"
 
     def _lm_display(lm: str) -> str:
-        """Display label — override wins, otherwise fall back to the
+        """Display label: override wins, otherwise fall back to the
         canonical LANDMARK_DISPLAY_LABELS mapping."""
         return landmark_labels.get(lm, landmark_label(lm))
 
@@ -1333,7 +1223,7 @@ def plot_ictal_mean(
     landmark_names = set()
     for r in line_results.values():
         landmark_names.update(r.triggered_averages.keys())
-    # Preferred order per spec row 20
+    # Display order for event landmarks.
     preferred = ["EEC", "UEO", "behavioral_onset", "OFF", "max_temp"]
     landmark_names = [lm for lm in preferred if lm in landmark_names] + \
                      sorted(lm for lm in landmark_names if lm not in preferred)
@@ -1346,11 +1236,6 @@ def plot_ictal_mean(
     ]
     n_lm = len(landmark_names)
 
-    # Layout: 3 + n_lm rows x 3 cols. Rows 0-2: scalar scatters (col 0):
-    # seizure mean, delta_max, delta_min. Rows 3..: triggered avg (col 1) +
-    # AUC (col 2). Width bumped to accommodate large axis-label fonts so the
-    # left-column ylabels (which sit close together vertically) don't run on
-    # top of one another.
     n_rows = max(n_lm, 3)
     fig, axes = plt.subplots(n_rows, 3,
                              figsize=(_style.PANEL_W * 3, _style.PANEL_H * n_rows),
@@ -1405,7 +1290,6 @@ def plot_ictal_mean(
     auc_axes_for_landmarks = []
     trace_lo, trace_hi = np.inf, -np.inf
     auc_lo, auc_hi = np.inf, -np.inf
-    # Per-landmark data captured so we can also write standalone files.
     per_lm_auc: Dict[str, Dict[str, tuple]] = {}
     per_lm_window: Dict[str, Optional[float]] = {}
     per_lm_variable_window: Dict[str, bool] = {}
@@ -1444,8 +1328,9 @@ def plot_ictal_mean(
             if lm in r.triggered_averages:
                 ta = r.triggered_averages[lm]
                 lm_positive_flags.append(bool(ta.auc_positive_only))
-                lo = float(np.nanmin(ta.mean_trace - ta.sem_trace))
-                hi = float(np.nanmax(ta.mean_trace + ta.sem_trace))
+                # Keep the mean within the axes even where SEM is undefined.
+                lo = float(np.nanmin(np.fmin(ta.mean_trace, ta.mean_trace - ta.sem_trace)))
+                hi = float(np.nanmax(np.fmax(ta.mean_trace, ta.mean_trace + ta.sem_trace)))
                 if np.isfinite(lo):
                     trace_lo = min(trace_lo, lo)
                 if np.isfinite(hi):
@@ -1512,7 +1397,7 @@ def plot_ictal_mean(
             ax_auc.set_title(title)
         auc_axes_for_landmarks.append(ax_auc)
 
-    # Apply matched y-axes across landmark rows (item 15)
+    # Match y-limits across landmark rows.
     if np.isfinite(trace_lo) and np.isfinite(trace_hi) and trace_hi > trace_lo:
         trace_lo = min(trace_lo, 0.0)
         trace_hi = max(trace_hi, 0.0)
@@ -1535,18 +1420,8 @@ def plot_ictal_mean(
     _save_publication_figure(fig, path)
     plt.close("all")
 
-    # Separate standalone plots for the delta_max / delta_min companions, so
-    # downstream summary slides can pull them individually. Both deltas are
-    # relative to late_heat_mean (immediate pre-ictal window from the
-    # heating paradigm) — that window has zero length in opto recordings
-    # (heating_start_time == ueo_time), so every session's delta is NaN
-    # and the rendered plot is blank.
-    #
-    # Gate on the actual delta values, not on a temperature-data proxy:
-    # `IctalMeanGroupResult` has no temp_* fields and no per-session
-    # temperature scalars, so `_any_temperature_data` always returns False
-    # here — using it as a proxy silently skipped these plots for every
-    # hyperthermia run too. Check the deltas themselves instead.
+    # Export maximum/minimum deflection plots only when finite values exist.
+    # Test the deltas directly; IctalMeanGroupResult has no temperature fields.
     def _has_any_finite(vals):
         return any(v is not None and not (isinstance(v, float) and math.isnan(v))
                    for v in vals)
@@ -1578,11 +1453,6 @@ def plot_ictal_mean(
         zero_line=True,
     )
 
-    # Per-landmark standalone files (AUC_<lm>_traces.png + _scatterplot.png).
-    # Per spec, only EEC / UEO / OFF get their own files - behavioral_onset
-    # and max_temp remain visible in the composite figure only. Filename
-    # slug goes through _lm_slug so opto renders AUC_stim_on_*.png instead
-    # of AUC_UEO_*.png.
     STANDALONE_AUC_LANDMARKS = {"EEC", "UEO", "OFF"}
     for lm in landmark_names:
         if lm not in STANDALONE_AUC_LANDMARKS:
@@ -1613,14 +1483,8 @@ def plot_ictal_mean(
                 zero_line=True,
             )
 
-    # Per-session ictal columns (seizure_mean, baseline_mean, delta_*) are
-    # written by the consolidator into values_means_<name_prefix>.csv (see
-    # write_values_means below). The standalone delta CSVs are dropped:
-    # delta_preictal_ictal_max / _min live in values_means too.
 
-    # values_auc_<name_prefix>.csv: one row per session. Fixed integration
-    # windows stay in the AUC column header. Variable windows get an adjacent
-    # per-session duration column so every exported AUC remains auditable.
+    # Fixed AUC durations go in headers; variable durations get a per-session column.
     landmarks_in_order = [
         lm for lm in landmark_names
         if any(lm in r.triggered_averages
@@ -1780,8 +1644,9 @@ def plot_postictal(
     scatter_options: Optional[dict] = None,
     trace_results: Optional[Dict[str, PostictalGroupResult]] = None,
 ) -> str:
-    """Row 26: cooling curve (rel to max temp, binned by 1C) as mean line + SEM band.
-    Rows 27-29: pairwise scatters of final time, temp, and mean ΔF/F.
+    """Plot cooling mean +/- SEM in 1 C bins relative to maximum temperature.
+
+    Also plot pairwise relationships between final time, temperature, and ΔF/F.
     """
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
@@ -1794,9 +1659,7 @@ def plot_postictal(
             csv_rows.append([name, s.mouse_id, s.heating_session,
                              s.final_time, s.final_temp, s.final_mean_dff])
 
-    # Row 26: cooling curve - mean line + SEM band per cohort.
-    # Per spec the x-axis starts at 0 on the LEFT and decreases (more negative)
-    # going right - i.e. cooling progression reads left-to-right.
+    # Cooling curves show decreasing temperature from left to right.
     ax = axes[0, 0]
     for name, r in line_results.items():
         color = _color(name)
@@ -1807,7 +1670,7 @@ def plot_postictal(
     _style.add_zero_y(ax, ensure_visible=True)
     ax.set_xlabel("Temp rel. to max (°C) - cooling →")
     ax.set_ylabel("Cooling mean\n(z_ΔF/F)")
-    ax.invert_xaxis()  # 0 on the LEFT, more negative going right (per spec)
+    ax.invert_xaxis()  # Zero on the left; temperature decreases to the right.
     ax.spines[["right", "top"]].set_visible(False)
     _legend_above(ax)
 
@@ -1855,8 +1718,6 @@ def plot_postictal(
         if legend:
             _legend_above(ax)
 
-    # Summary panels: only the cooling curve carries a legend - cohort
-    # colors are obvious from there, so the three scatter panels skip it.
     _draw_scatter_pair(axes[0, 1], "final_times", "final_temps",
                        "Post-Seizure Time (s)", "Final Temp (°C)", legend=False)
     _draw_scatter_pair(axes[1, 0], "final_times", "final_dffs",
@@ -1868,9 +1729,7 @@ def plot_postictal(
     _save_publication_figure(fig, path)
     plt.close("all")
 
-    # Standalone export of the cooling curve so it can be dropped directly
-    # into slide decks. Same data and (flipped) x-axis as panel [0,0]. Only
-    # emit when sessions actually have temperature data (skip for opto).
+    # Export cooling panels only when temperature data is available.
     has_temp = _any_temperature_data(line_results)
     if has_temp:
         fig_c, ax_c = plt.subplots(figsize=_style.FIG_WIDE)
@@ -1926,12 +1785,7 @@ def plot_experimental_vs_isosbestic_spike_triggered(
 ) -> str:
     """Spike-triggered overlay of 470 (experimental) and 405 (isosbestic).
 
-    A true neural response should appear in 470 but NOT in 405. Co-modulation
-    in 405 flags motion artifact contamination. Saves one panel per cohort.
-
-    Both channels are baseline-subtracted on the per-spike window using the
-    pre-event window [-bl_start_s, -bl_end_s]. We do not z-score because the
-    relative magnitude of 470 vs 405 swings is the diagnostic of interest.
+    Both channels use the [-bl_start_s, -bl_end_s] baseline without z-scoring.
     Returns the saved PNG path.
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -2013,7 +1867,6 @@ def plot_experimental_vs_isosbestic_spike_triggered(
         ax.set_xlabel("Time rel. to spike (s)")
         ax.set_ylabel("Δ raw signal\n(a.u.)")
         ax.set_title(f"{_label(cohort)} (n={n} sessions)")
-        # Single-line 48pt title needs ~1.20 to clear the legend.
         _legend_above(ax, y_offset=1.20)
         ax.spines[["right", "top"]].set_visible(False)
 
@@ -2051,13 +1904,12 @@ def plot_spike_triggered(
     trace_results: Optional[Dict[str, SpikeTriggeredGroupResult]] = None,
     dff_label: Optional[str] = None,
 ) -> str:
-    """Spec row 17: interictal ECoG spike-triggered photometry average + AUC.
+    """Interictal ECoG spike-triggered photometry averages and AUCs.
 
     Saves two standalone PNGs:
-      AUC_interictal_spikes_traces.png      (STA traces over ±30s)
+      AUC_interictal_spikes_traces.png      (STA traces)
       AUC_interictal_spikes_scatterplot.png (per-cohort AUC scatter)
-    Plus the companion CSV. The earlier `spike_triggered.png` combo and
-    `spike_triggered_zoomed.png` outputs have been retired per request.
+    Also writes the companion CSV.
     """
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
@@ -2145,53 +1997,10 @@ def plot_ueo_per_cohort(
     trace_colors: Optional[Dict[str, str]] = None,
     standard_axes_size_inches: Optional[tuple] = None,
 ) -> str:
-    """Per-cohort UEO-aligned mean ± SEM trace.
+    """Plot per-cohort mean +/- SEM for standard and extended windows.
 
-    Generates TWO windows so each can sit alongside the matching heatmaps:
-      standard  → ``standard_window_s`` (defaults to (-150, 150) s)
-      extended  → -150..+1000 s  (driven by `results_extended` if given,
-                                  else falls back to `results`)
-
-    `results` and `results_extended` should be the output of TWO separate
-    `compute_wide_ueo_triggered` calls - one with `post_window_s=150`, one
-    with `post_window_s=1000`. That keeps each window's mean/SEM honest
-    for whatever cohort N actually spans it, instead of letting a small
-    long-tail subset hijack the standard-window stats.
-
-    `y_lim_override` (tuple of (lo, hi)) hard-clamps the y-axis on every
-    panel so plots from different subfolders are directly comparable -
-    useful when one cohort's signal magnitude would otherwise dwarf
-    another's autoscaled axis.
-
-    `y_ticks_override` fixes the y tick locations across every cohort and
-    window. This is used when separately saved matched-condition plots must
-    retain identical labels despite different trace geometry.
-
-    `standard_window_s` swaps the default ±150 s standard window. Opto
-    pipelines pass (-100, 100) per spec.
-
-    `xlabel` / `title_suffix` swap the seizure-language defaults. Opto
-    pipelines pass "Time rel. to stim onset (s)" / "aligned to stim onset".
-
-    `filename_prefix` swaps the "UEO_aligned" prefix in the saved filenames
-    (opto pipelines pass "stim_onset_aligned"). `dff_label` overrides the
-    y-axis label (opto raw-ΔF/F experiments pass "ΔF/F").
-
-    `yscale_exclude`: cohort keys to skip when computing the within-window
-    auto y-lim, while still rendering them on the resulting axis. Used to
-    keep a high-range arm (e.g. Atomoxetine in DG_local_release) from
-    dominating the y-axis of the comparison cohorts.
-
-    `standard_axes_size_inches` fixes the standard standalone data rectangle,
-    without changing the summary or extended-window layouts.
-
-    Outputs per window:
-      summary_<prefix>_traces[_extended].png        (combo, one panel per cohort)
-      <prefix>_traces_DS_sz[_extended].png          (standalone per cohort)
-      <prefix>_traces_DS_nosz[_extended].png
-      <prefix>_traces_WT[_extended].png
-
-    Y-axes are matched within each window to make magnitudes comparable.
+    Y-limits are shared within each window. If results_extended is omitted,
+    both windows use results.
     """
     os.makedirs(output_dir, exist_ok=True)
     results = _ordered(results)
@@ -2244,11 +2053,8 @@ def plot_ueo_per_cohort(
     primary_path = None
 
     for x_lo, x_hi, combo_name, w_idx, window_results in WINDOWS:
-        # Window-local ylim across all cohorts so the three panels remain
-        # directly comparable for THIS window. Cohorts in
-        # ``yscale_exclude_set`` still get drawn, but their values don't
-        # influence the auto-y-lim — keeps a high-range arm (e.g.
-        # Atomoxetine) from squashing the rest of the plots.
+        # Share y-limits within each window. Excluded cohorts are plotted
+        # but do not contribute to automatic scale estimation.
         ylo, yhi = np.inf, -np.inf
         for cohort_name, ta in window_results.items():
             if cohort_name in yscale_exclude_set:
@@ -2259,8 +2065,9 @@ def plot_ueo_per_cohort(
             if not np.any(mask):
                 continue
             sem = ta.sem_trace
-            lo = float(np.nanmin((ta.mean_trace - sem)[mask]))
-            hi = float(np.nanmax((ta.mean_trace + sem)[mask]))
+            # Keep the mean within the axes even where SEM is undefined.
+            lo = float(np.nanmin(np.fmin(ta.mean_trace, ta.mean_trace - sem)[mask]))
+            hi = float(np.nanmax(np.fmax(ta.mean_trace, ta.mean_trace + sem)[mask]))
             if np.isfinite(lo):
                 ylo = min(ylo, lo)
             if np.isfinite(hi):
@@ -2270,8 +2077,7 @@ def plot_ueo_per_cohort(
             final_ylim = (ylo - pad, yhi + pad)
         else:
             final_ylim = None
-        # Hard override wins - cross-subfolder comparability beats
-        # per-cohort autoscaling when the caller explicitly asks for it.
+        # Explicit limits override autoscaling.
         if y_lim_override is not None:
             final_ylim = tuple(y_lim_override)
 
@@ -2305,8 +2111,7 @@ def plot_ueo_per_cohort(
         if w_idx == 0:
             primary_path = combo_path
 
-        # Per-cohort standalones for this window. No legend - each standalone
-        # shows a single line, so the title carries the cohort identity.
+        # Per-cohort standalone plots.
         def _draw_single(ax, ta, name, ylim, xl, xh):
             color = (trace_colors or {}).get(name, _color(name))
             sem = ta.sem_trace
@@ -2352,7 +2157,7 @@ def plot_opto_response(
     """Three standalone scatters: max / min / AUC of the 40 s post-stim window.
 
     Each panel: one column per cohort, per-session dots jittered around the
-    cohort x, mean ± SEM whisker. Skips cleanly when no cohort has any data
+    cohort x, mean ± SEM whisker. Returns without plots when no cohort has data
     (non-opto runs).
     """
     from ..analysis.opto_response import OptoResponseGroupResult
@@ -2365,10 +2170,6 @@ def plot_opto_response(
     os.makedirs(output_dir, exist_ok=True)
     signal_label = dff_label or DFF_LABEL
 
-    # Short y-labels (two-line) keep the FIG_SCATTER frame from clipping
-    # them at 48pt font. The "40 s post-stim" qualifier is part of the
-    # module's name and lives in the CSV / docs - the plot label doesn't
-    # need to repeat it.
     metrics = [
         ("stim_response_max_40s",
          f"Stim max\n({signal_label})",
@@ -2423,28 +2224,21 @@ def plot_preictal_mean_diagnostic(
     pre-ictal-mean analysis directly on the session's processed trace, plus
     a zoomed view that annotates the delta-of-mean calculation.
 
-    The goal is to make the binning + delta calculation auditable by eye.
     Returns the saved PNG path, or None if landmarks are missing.
 
     ``extrema_min_duration_s`` applies the same sustained max/min definition
-    used by ``compute_ictal_mean`` so the diagnostic and exported values
-    remain auditable against one another.
+    used by ``compute_ictal_mean``.
 
     `is_opto=True` retitles the regions for stim experiments (no heating, no
-    seizure): the post-stim detection window is forced to ``[stim_on,
-    stim_on + 40 s]`` rather than ``[stim_on, off_t]`` so the evoked peak
-    (which usually outlasts the stim duration) lands inside the search
-    window. `dff_label` overrides the y-axis label, useful for opto
-    experiments that render raw ΔF/F instead of z-scored.
+    seizure) and uses ``[stim_on, stim_on + 40 s]`` for extrema detection.
+    `dff_label` overrides the y-axis label.
     """
     from ..analysis._helpers import (
         get_signal_and_time, get_ueo_time, get_off_time, time_to_index,
     )
     from ..analysis.ictal_mean import compute_sustained_extrema
 
-    # Opto experiments don't end the detection window at stim-off (~10 s):
-    # the evoked peak typically falls 20-40 s post-stim. Match
-    # opto_response.WINDOW_S so the diagnostic and the analysis agree.
+    # Use the same post-stimulation window as opto_response.
     OPTO_DETECTION_WINDOW_S = 40.0
 
     lm = session.landmarks
@@ -2461,8 +2255,7 @@ def plot_preictal_mean_diagnostic(
     heat_t = lm.heating_start_time
     off_t = get_off_time(session)
     if is_opto:
-        # 40 s post-stim window for max/min detection — far enough past
-        # stim-off to capture the slow-release evoked peak.
+        # Detect extrema over the 40 s post-stimulation window.
         end_t = ueo_t + OPTO_DETECTION_WINDOW_S
         if len(time_axis):
             end_t = min(end_t, float(time_axis[-1]))
@@ -2483,9 +2276,7 @@ def plot_preictal_mean_diagnostic(
                 if end_late_n > 0 else np.nan)
     ictal_window = signal[i_ueo:i_end] if i_end > i_ueo else np.array([])
     ictal_mean = float(np.mean(ictal_window)) if len(ictal_window) else np.nan
-    # Per spec: mark BOTH ictal max and ictal min on the diagnostic - the
-    # experimenter wants to inspect either direction regardless of which has
-    # larger magnitude.
+    # Mark both maximum and minimum values in the diagnostic plot.
     if len(ictal_window):
         if extrema_min_duration_s is None:
             maximum_index = int(np.argmax(ictal_window))
@@ -2523,10 +2314,6 @@ def plot_preictal_mean_diagnostic(
         min_window_start = None
         extrema_duration_samples = 1
 
-    # 2-row stacked with suptitle + huge labels + per-axis annotations
-    # (the Δ_max / Δ_min callouts with boxed text) - well outside the canon
-    # FIG_2X2 budget. Constrained_layout collapses axes to zero at smaller
-    # sizes here, so use a generously oversized canvas.
     fig, axes = plt.subplots(2, 1, figsize=(_style.FIG_2X2[0] * 1.4,
                                             _style.FIG_2X2[1] * 2.0))
 
@@ -2536,9 +2323,8 @@ def plot_preictal_mean_diagnostic(
     ax.plot(time_axis, signal, color=color, linewidth=0.4)
     _style.add_zero_y(ax, ensure_visible=True)
 
-    # Opto sessions skip the "early heat" / "late heat" regions — there's
-    # no heating to bin — and use stim-experiment language for the
-    # 10s-pre-stim baseline + the post-stim detection window.
+    # Opto diagnostics show a 10 s pre-stimulation window and the
+    # post-stimulation detection window instead of heating periods.
     if is_opto:
         region_specs = [
             (ueo_t - end_late_n / fs if end_late_n else ueo_t, ueo_t,
@@ -2564,8 +2350,7 @@ def plot_preictal_mean_diagnostic(
             ax.plot([x0, x1], [m, m], color=c, linewidth=2.2,
                     label=f"{lbl}: {m:.3f}")
 
-    # Stim on/off landmark lines (opto only — hyperthermia plot doesn't show
-    # these because the regions already convey the bin boundaries).
+    # Add stimulation onset/offset lines to optogenetic diagnostics.
     if is_opto:
         ax.axvline(ueo_t, color="black", linestyle=":", linewidth=1.2,
                    label="stim on")
@@ -2686,17 +2471,12 @@ def write_values_means(
     heating_session), columns merged from Pre-ictal mean, Ictal mean, and
     Postictal modules.
 
-    Replaces preictal_mean.csv + ictal_mean.csv + postictal.csv +
-    Mean_delta_immediate_preictal_to_ictal_max/_min.csv. ictal_mean's
-    `seizure_mean` is the same quantity as preictal's `ictal_mean`; the
-    `ictal_mean` column wins and the duplicate is dropped. ictal_mean's
-    `baseline_mean` is the same as preictal's `baseline_mean`; preictal
-    wins for the same reason.
+    Pre-ictal `ictal_mean` and `baseline_mean` columns take precedence over
+    the duplicate Ictal `seizure_mean` and `baseline_mean` columns.
 
     Args:
         cohort_module_results: ``{cohort_name: {module_name: GroupResult}}``
-            as built by the run_group_analysis loop.
-        output_dir: where to drop the CSV.
+        output_dir: CSV destination directory.
         name_prefix: appended to the filename.
     """
     columns = [
@@ -2729,8 +2509,7 @@ def write_values_means(
         if ict is not None:
             for s in ict.session_results:
                 slot = _slot(cohort_name, s.mouse_id, s.heating_session)
-                # baseline_mean / seizure_mean intentionally dropped — same
-                # values as the preictal columns above.
+                # Baseline and seizure means are already in the preictal columns.
                 slot["delta_preictal_ictal"]     = s.delta_preictal_ictal
                 slot["delta_preictal_ictal_max"] = s.delta_preictal_ictal_max
                 slot["delta_preictal_ictal_min"] = s.delta_preictal_ictal_min

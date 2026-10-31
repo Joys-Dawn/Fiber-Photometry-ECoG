@@ -25,10 +25,10 @@ needs_r = pytest.mark.skipif(
 
 
 def _make_long_df(seed: int = 0) -> pd.DataFrame:
-    """4 mice with 1 (mouse, session) pair, 2 mice with 2 pairs. Treatment
-    effect of -4 on Post. Includes per-day baseline drift so the LMM can
-    actually identify the variance components rather than hitting a
-    boundary fit on perfectly clean data."""
+    """Six mice: four with one pair, two with two pairs, and a Post effect of -4.
+
+    Session-level baseline variation supports variance-component estimation.
+    """
     rng = np.random.default_rng(seed)
     rows = []
     for mid, base in zip(range(1, 5), [10.0, 12.0, 11.0, 13.0]):
@@ -83,10 +83,7 @@ def test_lmm_no_effect_yields_nonsig():
 
 @needs_r
 def test_all_identical_falls_back_to_paired_t(caplog):
-    """All-identical values short-circuit the LMM (constant response) and
-    fall through to the paired-t code path, which itself reports "None"
-    for zero-variance differences. Critical: never silently averages,
-    never falls to Welch independent."""
+    """Constant paired values produce no test, without an independent fallback."""
     rows = []
     for mid in range(1, 7):
         rows.append((f"m{mid}", 1, GROUP_A, 5.0))
@@ -165,8 +162,7 @@ def test_all_untestable_rows_write_parseable_header_only_csv(tmp_path):
 
 
 def test_separate_repeats_become_separate_pairs():
-    """5008's two heating_sessions must produce two distinct pair_ids (not
-    silently collapse, which would cause an exception inside lmer)."""
+    """Separate sessions from the same mouse retain distinct pair IDs."""
     rng = np.random.default_rng(0)
     rows = []
     base = 10.0

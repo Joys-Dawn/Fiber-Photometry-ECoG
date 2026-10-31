@@ -1,41 +1,8 @@
-"""
-LMM-enhanced paired comparison via R's ``lmerTest`` (Satterthwaite df).
+"""Paired comparisons using lmerTest and emmeans.
 
-Model
------
-``value ~ cohort + (1|mouse_id) + (1|pair_id)``
-
-where ``pair_id = mouse_id + "_s" + heating_session``. Each ``pair_id``
-contributes one Pre and one Post observation (the actual paired
-structure of the design). ``mouse_id`` captures the additional
-within-mouse correlation when a mouse contributes multiple
-(mouse, session) pairs — without it we'd be treating 5008's s1 and s2
-pairs as independent, which they are not.
-
-This mirrors the EphysAutomatedAnalysis `(1|Mouse_ID) + (1|Cell_ID)`
-specification, with ``pair_id`` filling the same role ``Cell_ID`` does
-there: the inner-most clustering level that the two paired
-observations live inside.
-
-Fallback chain
---------------
-1. **Primary**: ``lmer(value ~ cohort + (1|mouse_id) + (1|pair_id))``.
-   Satterthwaite-corrected denominator df (lmerTest), Wald t from emmeans
-   pairwise contrast.
-
-2. **When the full LMM fails or is singular** (or R is unavailable):
-   paired session-level test on ``(mouse_id, heating_session)`` differences
-   with a loud warning. The shared decision rule selects a paired t-test or
-   Wilcoxon signed-rank test. The pair-only intermediate LMM was removed because
-   with 2 obs per ``pair_id`` it collapses algebraically to the paired
-   t-test and was failing the singular check for the same reason the
-   full LMM did — providing no extra rescue path in practice. Install
-   R + lmerTest to enable the primary LMM.
-
-The PairedTestResult is the unified return type so the runner CSV
-code stays uniform; the ``test_name`` field tells you which path ran:
-``"LMM (Satterthwaite)"``, ``"Paired t-test"``,
-``"Wilcoxon signed-rank"``, or ``"None"``.
+Model: value ~ cohort + (1|mouse_id) + (1|pair_id), with one pair per session.
+Failed or singular fits fall back to session-level paired tests, which do
+not account for repeated sessions within a mouse.
 """
 
 from __future__ import annotations
@@ -59,12 +26,9 @@ def _paired_t_on_sessions_fallback(
 ) -> PairedTestResult:
     """Paired session-level test on (mouse_id, heating_session) pairs.
 
-    Used both when R is unavailable AND when both LMM fits (full and
-    pair-only) degenerate. Pairs are formed on
-    (mouse_id, heating_session), so 5008_s1 and 5008_s2 each contribute
-    one pair. This does NOT account for within-mouse correlation across
-    sessions — when reached via singular LMMs, that correlation simply
-    cannot be identified from the data.
+    Used when R is unavailable or the mixed-model result is unusable.
+    Each (mouse_id, heating_session) contributes one pair. Within-mouse
+    correlation across sessions is not modeled.
     """
     logger.warning(
         "LMM paired test [%s]: %s. Falling back to a paired test on "
@@ -72,8 +36,7 @@ def _paired_t_on_sessions_fallback(
         "sessions is unmodeled.",
         measurement, reason,
     )
-    # df_long uses long-format with one row per (mouse_id, heating_session,
-    # cohort). Build pair_id from columns we know are present.
+    # Reconstruct pair_id if the long-format input lacks that column.
     a_dict, b_dict = {}, {}
     for _, row in df_long.iterrows():
         if "pair_id" in df_long.columns:
@@ -106,7 +69,7 @@ def compare_paired_lmm(
     measurement : measurement label (used only for the result record).
     group_a_name, group_b_name : display labels for the descriptive output.
     df_long : DataFrame with columns ``mouse_id``, ``heating_session``,
-        ``cohort``, ``value``. One row per session. NaN values are
+        ``cohort``, ``value``. One row per session and condition. NaN values are
         dropped before fitting.
     group_a, group_b : cohort keys defining the contrast direction
         (effect is ``group_b - group_a``).
@@ -127,12 +90,12 @@ def compare_paired_lmm(
     complete_mice = by_mouse_cohorts[by_mouse_cohorts == 2].index
     df = df[df["mouse_id"].isin(complete_mice)]
 
-    # pair_id = (mouse_id, heating_session) — the actual paired unit.
+    # The paired unit is (mouse_id, heating_session).
     df["heating_session"] = df["heating_session"].astype(int)
     df["pair_id"] = (df["mouse_id"].astype(str)
                      + "_s" + df["heating_session"].astype(str))
 
-    # Keep only pair_ids present in both cohorts (the proper paired design).
+    # Keep only pair_ids present in both cohorts.
     by_pair_cohorts = df.groupby("pair_id")["cohort"].nunique()
     complete_pairs = by_pair_cohorts[by_pair_cohorts == 2].index
     df = df[df["pair_id"].isin(complete_pairs)]
@@ -153,7 +116,7 @@ def compare_paired_lmm(
             n_pairs=n_pairs, descriptives=descriptives,
         )
 
-    # If R isn't available, paired t-test fallback (ignores mouse clustering).
+    # Without R, use a paired test that does not model mouse clustering.
     if not r_bridge.is_r_available():
         return _paired_t_on_sessions_fallback(
             measurement, group_a_name, group_b_name,
@@ -162,7 +125,7 @@ def compare_paired_lmm(
 
     # Primary path: lmerTest with nested random effects.
     r_data = df[["value", "cohort", "mouse_id", "pair_id"]].copy()
-    # All-or-none variation check — lmer crashes when the response is constant.
+    # A constant response cannot support the mixed-model fit.
     if r_data["value"].nunique() < 2:
         return _paired_t_on_sessions_fallback(
             measurement, group_a_name, group_b_name,
@@ -186,9 +149,7 @@ def compare_paired_lmm(
             reason="LMM failed or singular",
         )
 
-    # emmeans contrast is `<level_a> - <level_b>`. For factor levels alpha
-    # ordered (A=Post, B=Pre or vice-versa) we want the Post - Pre direction:
-    # find the contrast that goes group_b - group_a and grab its sign.
+    # Orient the emmeans contrast as group_b - group_a.
     chosen = None
     for pw in result.pairwise:
         # contrast strings look like "10HZ_DG - 10HZ_DG_CPP"

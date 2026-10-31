@@ -1,22 +1,6 @@
-"""
-Opto stim response magnitude.
+"""Photometry maximum, minimum, and AUC over 40 s after stimulation onset.
 
-Per spec, for opto experiments the primary outcome is the magnitude of
-the photometry response that follows the stim onset. The biological
-response often outlasts the stim window itself, so the integration runs
-for a fixed 40 s starting at stim onset (= the UEO landmark in opto
-sessions).
-
-Every metric is computed on a trace that has had its [-5, -1] s
-pre-stim mean subtracted. This matches the convention
-``_compute_triggered_average`` applies to hyperthermia (see
-fiber_photometry_ecog/analysis/ictal_mean.py:223), so opto and
-hyperthermia now share the same per-event re-baselining rule.
-
-Per-session measurements (all on the [-5, -1] s baseline-corrected trace):
-    stim_response_max_40s : max ΔF/F within [0, 40] s post-stim onset
-    stim_response_min_40s : min ΔF/F within [0, 40] s post-stim onset
-    stim_auc_40s          : trapezoidal AUC of ΔF/F over [0, 40] s post-stim
+The mean from [-5, -1] s before onset is subtracted before measurement.
 """
 
 from __future__ import annotations
@@ -35,9 +19,6 @@ log = logging.getLogger(__name__)
 
 
 WINDOW_S = 40.0
-# Per-event re-baselining window applied to every metric below, matching
-# the [-5, -1] s window ``_compute_triggered_average`` uses for
-# hyperthermia (see ``compute_wide_ueo_triggered`` defaults).
 BL_START_S = 5.0
 BL_END_S = 1.0
 
@@ -58,10 +39,6 @@ class OptoResponseGroupResult:
 
 
 def _per_session(s: Session) -> Optional[OptoResponseSessionResult]:
-    # Gate: only sessions with a recorded opto stim channel get these
-    # measurements. Without this, seized hyperthermia sessions (which
-    # also have ueo_time set) would silently emit "stim_response_*"
-    # values that mean something different.
     if s.raw is None or s.raw.stim_raw is None:
         return None
     stim_t = get_ueo_time(s)
@@ -82,9 +59,6 @@ def _per_session(s: Session) -> Optional[OptoResponseSessionResult]:
         )
         return None
 
-    # Per-event re-baselining: subtract mean of [-5, -1] s pre-stim
-    # window from the whole signal before pulling metrics. Matches the
-    # hyperthermia convention (``_compute_triggered_average``).
     bl_lo = stim_idx - int(round(BL_START_S * fs))
     bl_hi = stim_idx - int(round(BL_END_S * fs))
     if bl_lo < 0 or bl_hi <= bl_lo:

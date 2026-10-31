@@ -1,5 +1,5 @@
 """
-Tests for Phase 3: Control Equivalent Landmark Assignment.
+Tests for control-equivalent landmark assignment.
 """
 
 import numpy as np
@@ -124,8 +124,7 @@ class TestComputeSeizureGroupMeans:
             compute_seizure_group_means([])
 
     def test_session_without_landmarks_raises(self):
-        """Silent skipping of seizure sessions with missing landmarks is
-        disabled — pairing must crash so the data problem is visible."""
+        """Pairing raises an error for seizure sessions without landmarks."""
         fs = 100.0
         good = _make_seizure_session("M1", fs, 600, heat_start=60.0,
                                      eec_time=300.0, ueo_time=320.0, off_time=350.0)
@@ -135,8 +134,7 @@ class TestComputeSeizureGroupMeans:
             compute_seizure_group_means([good, bad])
 
     def test_session_with_partial_landmarks_raises(self):
-        """A seizure session missing ueo/off time must crash pairing, not
-        silently disappear from the group means."""
+        """Pairing raises an error for incomplete seizure onset/offset landmarks."""
         fs = 100.0
         good = _make_seizure_session("M1", fs, 600, heat_start=60.0,
                                      eec_time=300.0, ueo_time=320.0, off_time=350.0)

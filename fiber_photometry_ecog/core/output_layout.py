@@ -1,18 +1,14 @@
 """
 Output folder layout for per-strategy results.
 
-Single source of truth for the four subfolders inside each
-`preprocessing_<METHOD>/` results folder, so plot writers and the sweep
-driver agree on where files land.
-
 Structure:
     preprocessing_<METHOD>/
-        quality check/              <- v1/v2/v3 per-session + isosbestic QC
+        quality check/              <- per-session and isosbestic QC
         parameter detection/        <- per-session diagnostic plots
         plots and values_means/     <- cohort-level mean signal plots + CSVs
         plots and values_transients/<- cohort-level transient plots + CSVs
 
-Spacing in the folder names matches the user-facing spec.
+Folder names contain spaces as shown above.
 """
 
 from pathlib import Path

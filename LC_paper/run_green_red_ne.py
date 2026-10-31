@@ -1,6 +1,6 @@
 """Standalone qualitative analysis for the dual-color DG NE experiment.
 
-This runner is intentionally dataset-specific. Analog input 1 is green
+For this dataset, analog input 1 is green
 GRAB-NE and analog input 2 is the red NE sensor (or its mutant control).
 Neither channel has an isosbestic signal, so each is independently low-pass
 filtered, biexponentially detrended, and baseline z-scored with Strategy D.
@@ -10,8 +10,8 @@ values, transient analyses, statistics, or general pipeline configuration are
 produced here.
 
 Usage:
-    python run_green_red_ne.py
-    python run_green_red_ne.py --rebuild-cache
+    python -m LC_paper.run_green_red_ne
+    python -m LC_paper.run_green_red_ne --rebuild-cache
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from run_threshold_sweep import load_sessions
+from LC_paper.run_threshold_sweep import load_sessions
 from fiber_photometry_ecog.core.config import PhotometryConfig
 from fiber_photometry_ecog.core.data_models import Session
 from fiber_photometry_ecog.preprocessing.photometry import (
@@ -50,8 +50,8 @@ log = logging.getLogger(__name__)
 
 
 DATA_ROOT = Path("D:/Ephys_Data/DG_greenANDred_NE")
-OUTPUT_DIR = Path("results") / "results_DG_greenANDred_NE"
-CACHE_DIR = Path("sweep_cache") / "dg_green_and_red_ne"
+OUTPUT_DIR = Path(__file__).resolve().parent / "results" / "results_DG_greenANDred_NE"
+CACHE_DIR = Path(__file__).resolve().parent / "sweep_cache" / "dg_green_and_red_ne"
 
 PRE_EVENT_S = 100.0
 POST_EVENT_S = 100.0
@@ -65,7 +65,7 @@ RED_COLOR = "red"
 
 @dataclass(frozen=True)
 class GroupSpec:
-    """Hardcoded definition of one requested qualitative plot."""
+    """Dataset and cohort definition for one qualitative plot."""
 
     root_name: str
     cohort: str

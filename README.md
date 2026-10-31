@@ -1,150 +1,152 @@
+[LC_GCaMP example data and demo guide](LC_paper/docs/REVIEWER_GUIDE.md)
+
 # Fiber Photometry & ECoG Analysis
 
-A Python GUI for analyzing simultaneous fiber photometry, ECoG, and temperature recordings from a mouse hyperthermia-induced seizure model. It aligns and preprocesses multi-modal data, detects calcium transients and interictal spikes, extracts parameters across seizure phases, and generates publication-style plots.
+A Python desktop application for analyzing simultaneous fiber photometry,
+electrocorticography (ECoG), and temperature recordings. It synchronizes
+recordings, preprocesses signals, detects photometry transients and interictal
+spikes, and extracts measurements around seizure events.
+
+The graphical interface is under development. Paper-specific analyses and the
+LC data demo use the command-line runners in [LC_paper/](LC_paper/).
 
 ## Installation
 
-Requires Python 3.12+.
+Tested with Python 3.13.9 on Windows 11 Pro. Python dependencies and their
+versions are listed in [requirements.txt](requirements.txt). The application
+uses Tkinter for its interface.
 
-```bash
-pip install -r requirements.txt
-python run.py
+From the repository directory, run in PowerShell:
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe run.py
 ```
 
 ## Data Organization
 
-Point the app at a parent experiment folder structured like this:
+Select a parent experiment folder containing an Excel data log and recordings:
 
-```
+```text
 experiment/
-├── data_log.xlsx                   (experiment metadata)
-├── Scn1a_seizure/                  (cohort)
-│   ├── mouse1234_session1/         (one folder per mouse × session)
-│   │   ├── Record Node XXX/        (Open Ephys recording)
-│   │   │   └── experiment1/recording1/
-│   │   │       ├── continuous/     (ECoG, EMG, temperature)
-│   │   │       └── events/         (TTL sync pulses)
-│   │   └── photometry.ppd          (pyPhotometry file)
-│   └── mouse5678_session2/
-├── Scn1a_no_seizure/
-└── WT/
+  data_log.xlsx
+  Scn1a_seizure/
+    mouse_session/
+      photometry.ppd
+      dated_open_ephys_recording/
+        Record Node .../
+          experiment1/recording1/
+            structure.oebin
+            continuous/
+            events/
+  Scn1a_no_seizure/
+  WT/
 ```
 
-Sessions are discovered automatically — no individual file picking required.
+The scanner discovers recording pairs automatically. A flat layout with
+mouse/session folders directly under the experiment folder is also supported.
+Keep the Open Ephys metadata, continuous samples, timestamps, and TTL events.
 
-### Data log
-
-`data_log.xlsx` provides per-session metadata:
-
-| Column | Description |
-|--------|-------------|
-| Mouse ID | Matched to folder name |
-| Date | Matched to Open Ephys folder date |
-| Genotype | `H` = Scn1a, `W` = WT for example |
-| Seizure | Number of seizures (0, 1, >1) |
-| Fatal | SUDEP (yes/no) |
-| Exclude | Whether to exclude session |
-| Reason | Exclusion reason |
+The Excel log supplies mouse IDs, acquisition dates, genotype/cohort, session
+numbers, seizure status, inclusion flags, channel assignments, heating onset,
+and seizure landmarks. Optional columns specify transient thresholds and
+baseline intervals. All worksheets are read. Sessions are matched by mouse ID
+and recording date.
 
 ## Workflow
 
-The GUI has three tabs, used in order.
+The application has four tabs:
 
-### 1. Load & Preprocess
+1. **Data Loading & Cohort Management:** scan the experiment folder, review
+   session metadata and channel assignments, then load raw recordings or saved
+   preprocessed sessions. Select the output directory here.
+2. **Preprocessing:** select one or more photometry strategies and run
+   preprocessing. Strategy C is selected by default. Review the ECoG trace and
+   mark EEC, UEO, behavioral onset, and seizure offset.
+3. **Extraction:** select time- or temperature-based control matching and the
+   cohorts to plot, then run session and group analyses.
+4. **Statistics:** select cohorts and run comparisons on the extracted
+   measurements. Two groups use Welch's t-test or Mann-Whitney U; three or more
+   use ANOVA or Kruskal-Wallis with pairwise comparisons.
 
-1. Browse to the experiment folder. The app discovers cohorts, sessions, and matches them to the data log.
-2. Confirm hardware parameters (ECoG / EMG / temperature channels, sampling rates). Defaults are auto-detected.
-3. Pick a fiber photometry preprocessing strategy (see below).
-4. **Load All Sessions** to batch-load, align, and preprocess.
-5. Optionally save preprocessed data so future loads are instant.
-
-### 2. Review & Mark Landmarks
-
-An interactive viewer shows the preprocessed ECoG trace for each seizure session. Click the trace to mark:
-
-- **EEC** — earliest electrographic change
-- **UEO** — unequivocal electrographic onset
-- **Behavioral onset**
-- **OFF** — seizure offset
-
-Control sessions (no seizures) get matched landmarks automatically, either time-matched or temperature-matched to the seizure group mean.
-
-### 3. Analysis & Output
-
-Runs all analyses, generates plots, and exports results. Requires every included session to have completed preprocessing and landmark marking.
+EEC denotes earliest electrographic change, UEO unequivocal electrographic
+onset, and OFF seizure offset. Controls receive equivalent event landmarks
+through the selected matching method.
 
 ## Preprocessing
 
-### Alignment
+**Synchronization:** TTL pulses establish a linear clock-offset and drift
+correction. Photometry is interpolated onto the common timebase. Higher-rate
+ECoG is downsampled to 1 kHz. Standard recordings are trimmed to their overlap;
+optogenetic recordings retain the full photometry interval and use NaN padding
+where Open Ephys data are unavailable.
 
-Photometry and Open Ephys run on independent clocks. Alignment uses:
+**ECoG:** fourth-order 1-70 Hz Butterworth bandpass and a 60 Hz notch filter
+(Q = 30), applied without phase shift. Spike detection uses baseline-derived
+thresholds. The shared pipeline excludes samples from 30 s before seizure or
+equivalent onset through the end of the recording.
 
-1. TTL barcode matching between pyPhotometry digital output and Open Ephys events
-2. Linear regression on matched pulse times to correct clock drift
-3. PCHIP interpolation to upsample photometry to the ECoG rate
-4. Trim of unmatched ends
+**Temperature:** voltage-to-temperature calibration is selected from recording
+metadata and acquisition date, followed by a 300-sample moving average.
+Baseline, peak, and terminal temperatures are extracted.
 
-### ECoG
+**Photometry:** four preprocessing strategies are available:
 
-- 4th-order Butterworth bandpass, 1–70 Hz
-- 60 Hz notch (Q=30)
-- Zero-phase filtering (`sosfiltfilt`)
-- Interictal spike detection outside seizure periods (prominence-based, polarity-aware)
+| Strategy | Processing |
+| --- | --- |
+| A | Gaussian smoothing of both channels, then isosbestic subtraction and division |
+| B | 10 Hz low-pass filtering, biexponential bleaching correction, and ordinary least-squares isosbestic regression |
+| C (default) | 3 Hz low-pass filtering and IRLS isosbestic regression using Tukey bisquare weights; no separate biexponential correction |
+| D | 10 Hz low-pass filtering and biexponential correction of the signal channel without an isosbestic control |
 
-### Temperature
+The shared pipeline z-scores dF/F from recording start to the session's
+baseline endpoint.
+High-pass filtering/detrending is disabled by default. Strategy A detects
+transients by prominence on the z-scored signal; B, C, and D apply a z-score
+height threshold followed by a prominence threshold on dF/F. Thresholds come
+from the strategy configuration or session metadata.
 
-- Voltage-to-temperature conversion: `T(°C) = 0.0981 × V(mV) + 8.81` (configurable)
-- 300-sample moving average
-- Automatic extraction of baseline, peak, and terminal temperatures
+## Measurements and Outputs
 
-### Fiber photometry
+Analyses cover cohort characteristics, baseline transients, preictal mean
+signal and transients, ictal mean signal and transients, postictal recovery,
+and spike-triggered photometry responses. Outputs include session measurements,
+event-aligned mean/SEM traces, heatmaps, scatterplots, and statistical tables.
 
-Three isosbestic correction strategies are available:
+Within the selected output directory, each preprocessing strategy has separate
+folders for quality checks, parameter detection, mean-signal plots and values,
+and transient plots and values. Saved session files can be reloaded without
+repeating raw-data preprocessing.
 
-- **Strategy A** — Gaussian smoothing (σ = 75 samples) on both channels, then simple isosbestic subtraction `ΔF/F = (GCaMP − Iso) / Iso`.
-- **Strategy B** — 10 Hz low-pass, biexponential photobleaching fit, OLS regression of isosbestic onto GCaMP for motion correction.
-- **Strategy C** — Biexponential photobleaching fit, IRLS robust regression of isosbestic onto GCaMP (down-weights outliers; more resistant to transient artifacts than OLS).
+Paper-specific cohort definitions, AUC windows, and figure exports are documented
+in [LC_paper/docs/HEADLESS_RUNNERS.md](LC_paper/docs/HEADLESS_RUNNERS.md); they are
+not all defaults of the graphical application.
 
-Two signals are derived from the corrected `ΔF/F`:
+## Repository Structure
 
-| Signal | Used for | Normalization |
-|--------|----------|---------------|
-| **Mean** | Mean ΔF/F analyses | Z-scored to the pre-heating baseline |
-| **Transient** | Transient detection | Detrended, then z-scored to baseline |
+| Path | Contents |
+| --- | --- |
+| `run.py` | Application entry point |
+| `fiber_photometry_ecog/app.py` | Graphical interface |
+| `fiber_photometry_ecog/data_loading/` | Readers, metadata import, and synchronization |
+| `fiber_photometry_ecog/preprocessing/` | Signal processing and event detection |
+| `fiber_photometry_ecog/analysis/` | Session and group measurements |
+| `fiber_photometry_ecog/pairing/` | Control landmark matching |
+| `fiber_photometry_ecog/statistics/` | Statistical comparisons |
+| `fiber_photometry_ecog/visualization/` | Quality-control and analysis figures |
+| `fiber_photometry_ecog/tests/` | Shared application and analysis tests |
+| `LC_paper/` | Paper runners, figure scripts, guides, data assets, and results |
 
-All strategies use baseline z-scoring to avoid inflating the standard deviation during heating, which would compress z-scores and cause the detection height gate to miss real transients (per PASTa / Donka 2025).
+## Tests
 
-### Transient detection
+```powershell
+.venv/Scripts/python.exe -m pip install pytest==9.0.0
+.venv/Scripts/python.exe -m pytest fiber_photometry_ecog/tests LC_paper/tests -q
+```
 
-Strategy A uses `scipy.signal.find_peaks` with prominence ≥ 1.0 on the z-scored signal.
+Some integration tests require local recording files.
 
-Strategies B and C use the Wallace 2025 two-gate method:
+## License
 
-1. **Height gate** — z-score ≥ 1.0 on the detrended signal (identifies candidates above noise)
-2. **Prominence gate** — prominence threshold on raw `ΔF/F` (confirms real transients, not fluctuations on a slow trend)
-
-Transient properties are measured on the raw `ΔF/F` (per Wallace et al. 2025): peak amplitude, peak-to-trough amplitude (±2.5 s), half-width at 50% prominence, and temperature at peak.
-
-## Output Parameters
-
-**Cohort characteristics** — Baseline temperature, seizure threshold temperature.
-
-**Baseline / interictal transients** — Frequency, amplitude, and half-width across the baseline period.
-
-**Pre-ictal mean signal** — Mean z-ΔF/F binned by time period (baseline, early heat, late heat) and by temperature (1 °C bins during heating).
-
-**Pre-ictal transients** — Moving averages of frequency, amplitude, and half-width during heating; transient properties binned by temperature (1 °C bins).
-
-**Spike-triggered averages** — Interictal spike-triggered average of the photometry signal (±30 s) with AUC quantification.
-
-**Ictal mean signal** — Mean z-ΔF/F within the seizure period relative to baseline; triggered averages (±30 s) at EEC, UEO, behavioral onset, OFF, and max temperature, each with AUC.
-
-**Ictal transients** — PSTH of transient frequency around UEO (10 s bins, ±60 s); moving averages of transient properties around UEO.
-
-**Postictal recovery** — Temperature vs. mean z-ΔF/F during cooling; final recording time, temperature, and ΔF/F.
-
-## References
-
-- **Wallace et al. 2025** — Two-gate transient detection method. PMC11888193.
-- **Donka, Konanur, Loh, Roitman & Roitman 2025 (PASTa)** — Photometry analysis standardized tools; baseline z-scoring for paradigms that change signal variance. *Current Protocols* 5(7):e70161. DOI 10.1002/cpz1.70161.
-- **Simpson et al. 2024** — Guidelines for z-scoring fiber photometry data.
+The software is distributed under [GNU GPL version 3](LICENSE).

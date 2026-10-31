@@ -1,19 +1,18 @@
 """
-Single-threshold strategy-C pipeline run over all
-D:/Ephys_Data/Hyperthermia_seizure subfolders.
+Single-threshold strategy-C analysis of hyperthermia and PTZ datasets.
 
 Thresholds:
     LC_GCaMP             -> 0.015
     everything else      -> 0.030
 
-Outputs land in results/results_hyperthermia_<subfolder>/ so existing
-results/results_dg/ and results/results_lc/ are not touched.
+Default outputs are LC_paper/results/results_hyperthermia_<subfolder>/, with
+separate results_PTZ_GRABne folders for the PTZ analyses.
 
-Cache is fresh per subfolder (sweep_cache/hyperthermia_<subfolder>/C/...).
+Preprocessing caches are reused per dataset and strategy.
 
 Usage:
-    python run_hyperthermia.py              # full run, all 7 subfolders
-    python run_hyperthermia.py --only LC_GCaMP DG_GRABne   # subset
+    python -m LC_paper.run_hyperthermia
+    python -m LC_paper.run_hyperthermia --only LC_GCaMP DG_GRABne
 """
 
 from __future__ import annotations
@@ -27,8 +26,9 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("agg")
 
-# Reuse the heavy lifting that already lives in the sweep driver.
-from run_threshold_sweep import (
+from LC_paper import run_threshold_sweep as sweep
+
+from LC_paper.run_threshold_sweep import (
     load_sessions,
     preprocess_and_cache,
     run_group_analysis,
@@ -55,19 +55,13 @@ log = logging.getLogger(__name__)
 
 
 HYPER_ROOT = Path("D:/Ephys_Data/Hyperthermia_seizure")
-RESULTS_ROOT = Path("results")
+RESULTS_ROOT = Path(__file__).resolve().parent / "results"
 STRATEGY = "C"
 
-# All UEO-aligned traces / heatmaps render on a ±100 s window per user
-# spec (was ±150 s by default). Cross-subfolder comparability matters more
-# than autoscale at this point — the DG vs Mutant overlay needs identical
-# x and y axes plus the same heatmap color range.
+# Default UEO-aligned trace and heatmap window; dataset overrides follow.
 UEO_X_WINDOW = (-100.0, 100.0)
 
-# PTZ mice tended to die post-seizure, so the late drop in the ±100 s
-# window is largely mortality artifact rather than physiology. Narrow to
-# ±50 s for the PTZ subfolders (both split and pooled) so the plot shows
-# only the peri-seizure window we can interpret.
+# Both split and pooled PTZ plots use a +/-50 s display window.
 PTZ_UEO_X_WINDOW = (-50.0, 50.0)
 
 # Per-subfolder UEO x-axis override. Missing entries fall back to
@@ -89,8 +83,7 @@ HEATMAP_VLIM_PAIRS = {
     "DG_GRABneMutant": "DG_GRABne",
 }
 
-# Pooled cohort key used when `pooled=True` for a subfolder. Every session
-# is dropped into this one bucket instead of being split by genotype.
+# Cohort key for all sessions when `pooled=True`.
 PTZ_POOLED_KEY = "PTZ_pooled"
 
 # DG and LC publication scalar views compare seizure outcome, with both
@@ -98,19 +91,13 @@ PTZ_POOLED_KEY = "PTZ_pooled"
 # genotype-by-outcome groups via `trace_cohort_classifier` below.
 SEIZURE_OUTCOME_SUBFOLDERS = {"DG_GRABne", "LC_GCaMP"}
 
-# These two publication datasets use duration-qualified ictal extrema. The
-# reported maximum must be sustained at-or-above for 200 ms; the minimum must
-# be sustained at-or-below for 200 ms. Other hyperthermia datasets and the GUI
-# retain their existing sample-wise extrema.
 ICTAL_EXTREMA_MIN_DURATION_S = {
     "DG_GRABne": 0.200,
     "LC_GCaMP": 0.200,
 }
 
-# Dataset-specific AUC policies for the publication DG/LC analyses. LC uses
-# the full 100 s response shown in its UEO-aligned traces. DG seizure
-# sessions use their own UEO-to-OFF duration; no-seizure sessions use the
-# seizure-group mean.
+# LC_GCaMP: 100 s. DG_GRABne: individual seizure durations;
+# DG_GRABne controls use the seizure-group mean duration.
 LC_AUC_WINDOWS_S = {
     "EEC": 100.0,
     "UEO": 100.0,
@@ -154,11 +141,9 @@ def _genotype_point_colors(sessions) -> dict:
         for session in sessions
     }
 
-# Per-subfolder within-cohort paired-period stats. Each entry is fed to
-# `run_group_analysis(within_cohort_paired_periods=...)` and appended to
-# the subfolder's stats_<name>.csv. Currently DG_GRABne only, per user
-# request: within-cohort Heating-vs-Ictal paired test (auto-picks paired
-# t-test vs Wilcoxon signed-rank based on normality of differences).
+# DG within-cohort heating-versus-ictal comparisons are appended to
+# stats_<name>.csv. The distribution of paired differences determines
+# whether to use a paired t-test or Wilcoxon signed-rank test.
 SUBFOLDER_WITHIN_COHORT_PAIRED_PERIODS: dict[str, list] = {
     "DG_GRABne": [
         {
@@ -171,33 +156,15 @@ SUBFOLDER_WITHIN_COHORT_PAIRED_PERIODS: dict[str, list] = {
     ],
 }
 
-# Subfolder definitions:
-#   subfolder       : path component under HYPER_ROOT
-#   fresh_cache_key : preprocessing-cache subkey under sweep_cache/
-#   threshold       : transient-detection threshold (z-units)
-#   has_temperature : skip thermistor analyses when no probe was wired
-#                     (PTZ — floating ADC1 input)
-#   ueo_y_lim       : hard-clamp on UEO-aligned trace y-axis (or None)
-#   run_stats       : optional 2-way DS_sz vs WT_no_sz stats pass
-#   output_subdir   : results folder relative to results_root. Defaults to
-#                     "results_hyperthermia_<subfolder>" when None; PTZ
-#                     overrides because it isn't a hyperthermia experiment.
-#   pooled          : if True, every session is dropped into one
-#                     PTZ_POOLED_KEY cohort instead of splitting by genotype
-#                     × seized. Used for the PTZ pooled run alongside the
-#                     standard split — both are needed because PTZ-induced
-#                     seizures behave similarly across genotypes so the
-#                     pooled view is the canonical one for the main figure.
+# Tuple fields: subfolder, cache key, prominence threshold, temperature flag,
+# y-limits, statistics flag, output subdirectory, pooled-cohort flag.
 SUBFOLDERS = [
     ("DG_GRABne",       "hyperthermia_dg_grabne",        0.030, True,  DG_UEO_Y_LIM, True,  None,                           False),
     ("DG_GRABneMutant", "hyperthermia_dg_grabne_mutant", 0.030, True,  MUTANT_UEO_Y_LIM, False, None,                           False),
     ("DG_GRABne_NRI",   "hyperthermia_dg_grabne_nri",    0.030, True,  None,         False, None,                           False),
     ("FCD_GRABne",      "hyperthermia_fcd_grabne",       0.030, True,  None,         False, None,                           False),
     ("LC_GCaMP",        "hyperthermia_lc_gcamp",         0.015, True,  None,         True,  None,                           False),
-    # PTZ runs twice over the same sessions/cache — split (genotype × seized)
-    # and pooled (everything → PTZ_pooled). ds_key is intentionally identical
-    # so the second run reuses the first's preprocessing cache (rebuild
-    # would take a full day per the cache invalidation rules).
+    # Split and pooled PTZ analyses share a preprocessing cache via ds_key.
     ("PTZ_GRABne",      "hyperthermia_ptz_grabne",       0.030, False, None,         False, "results_PTZ_GRABne",           False),
     ("PTZ_GRABne",      "hyperthermia_ptz_grabne",       0.030, False, None,         False, "results_PTZ_GRABne_pooled",    True),
     ("PVT_GRABne",      "hyperthermia_pvt_grabne",       0.030, True,  None,         False, None,                           False),
@@ -218,8 +185,7 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
                        within_cohort_paired_periods=None) -> None:
     ds_path = HYPER_ROOT / subfolder
     if not ds_path.exists():
-        log.warning("Skipping %s -- path does not exist: %s", subfolder, ds_path)
-        return
+        raise FileNotFoundError(f"Dataset directory does not exist: {ds_path}")
 
     log.info("=" * 70)
     log.info("Hyperthermia / %s   strategy=%s   threshold=%g   cache_key=%s   "
@@ -230,8 +196,7 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
     sessions = load_sessions(ds_path, test_mode=False,
                              has_temperature=has_temperature)
     if not sessions:
-        log.warning("No loadable sessions in %s; skipping group analysis.", subfolder)
-        return
+        raise ValueError(f"No loadable sessions in {ds_path}")
 
     if keep_cohorts is not None:
         before = len(sessions)
@@ -239,14 +204,11 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
         log.info("  Cohort filter %s: %d -> %d sessions",
                  sorted(keep_cohorts), before, len(sessions))
         if not sessions:
-            log.warning("No sessions remain in %s after cohort filter %s; "
-                        "skipping group analysis.",
-                        subfolder, sorted(keep_cohorts))
-            return
+            raise ValueError(
+                f"No sessions in {ds_path} match cohorts {sorted(keep_cohorts)}"
+            )
 
-    # Output folder name. PTZ overrides because the experiment isn't
-    # hyperthermia — calling it "results_hyperthermia_PTZ_GRABne" would
-    # mislabel the data.
+    # PTZ uses output names without the hyperthermia prefix.
     folder_name = output_subdir or f"results_hyperthermia_{subfolder}"
     results_base = output_root / folder_name
     layout = ensure_layout(results_base / strategy_folder_name(STRATEGY))
@@ -265,16 +227,11 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
             zdff_hpf, dff_det, fs, tc, temp_smooth,
         )
 
-        # Per-session quality-check plots (full_trace.png, peri_ictal.png +
-        # peri_ictal.html). plot_transient_review is intentionally skipped — it
-        # belongs to the threshold sweep, which we are not running here.
+        # Full-trace and peri-ictal QC; threshold-review plots are sweep-only.
         plot_sanity_check(session, qc_dir, session.transients)
         plot_zoomed(session, qc_dir)
 
-    # Pooled PTZ runs collapse the genotype × seized split into a single bucket
-    # so the resulting cohort means/SEM reflect PTZ-as-one-group, which is
-    # the canonical view we report in the main figure. The split-cohort run
-    # is still produced as a separate subfolder for supplemental support.
+    # Pooled PTZ means and SEM combine all genotypes and seizure outcomes.
     cohort_classifier = (lambda _s: PTZ_POOLED_KEY) if pooled else None
     trace_cohort_classifier = None
     module_cohort_classifiers = None
@@ -294,8 +251,7 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
         )
 
         if subfolder == "LC_GCaMP":
-            # Baseline transients introduce genotype before seizure outcome:
-            # DS combines seizure/no-seizure sessions in red; WT is blue.
+            # Baseline transients compare genotype, pooling seizure outcomes.
             module_cohort_classifiers = {
                 "Baseline transients": _genotype_classifier,
             }
@@ -310,17 +266,12 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
                 ),
             }
 
-    # CSV / stats filename prefix. For default folders the prefix is just
-    # the subfolder name (preserves legacy ``stats_DG_GRABne.csv`` etc.).
-    # Custom output_subdir (e.g. PTZ pooled) supplies its own discriminator
-    # via the folder name so the two PTZ runs don't overwrite each other.
     if output_subdir:
         prefix = output_subdir.removeprefix("results_")
     else:
         prefix = subfolder
 
-    # Group analysis + all the standard plots, into the same Hyperthermia
-    # results tree so the existing results_dg/ / results_lc/ are untouched.
+    # Group measurements, statistics, and plots use the dataset output tree.
     log.info("  Running group analysis -> %s   run_stats=%s",
              results_base, run_stats)
     extrema_min_duration_s = ICTAL_EXTREMA_MIN_DURATION_S.get(subfolder)
@@ -373,8 +324,18 @@ def run_one_subfolder(subfolder: str, ds_key: str, threshold: float,
 
 
 def main() -> None:
+    global HYPER_ROOT
+
     parser = argparse.ArgumentParser(
         description="Strategy-C single-threshold run over Hyperthermia_seizure"
+    )
+    parser.add_argument(
+        "--data-root", type=Path, default=HYPER_ROOT,
+        help="Parent directory containing LC_GCaMP, DG_GRABne, and other datasets.",
+    )
+    parser.add_argument(
+        "--cache-root", type=Path, default=sweep.CACHE_DIR,
+        help="Preprocessing cache directory (default: sweep_cache).",
     )
     parser.add_argument(
         "--only", nargs="+", default=None,
@@ -388,8 +349,7 @@ def main() -> None:
         "--cohorts", default=None,
         help=(
             "Comma-separated cohort keys to keep (e.g. 'DS_sz,WT_no_sz,WT_sz'). "
-            "Default: keep all cohorts. When set, stats are force-disabled "
-            "since the filtered view is not the canonical comparison."
+            "Default: keep all cohorts. Use --no-stats for a plot-only subset."
         ),
     )
     parser.add_argument(
@@ -397,6 +357,8 @@ def main() -> None:
         help="Force-disable the per-subfolder stats pass even when configured.",
     )
     args = parser.parse_args()
+    HYPER_ROOT = args.data_root
+    sweep.CACHE_DIR = args.cache_root
 
     selected = SUBFOLDERS
     if args.only:
@@ -418,10 +380,8 @@ def main() -> None:
                          f"Choose from {list(COHORT_KEYS)}.")
         log.info("Cohort filter active: keep %s", sorted(keep_cohorts))
 
-    # Stats run iff the per-subfolder SUBFOLDERS flag says so (currently
-    # DG_GRABne and LC_GCaMP only). --no-stats forces off; the cohort
-    # filter no longer disables stats since the filtered DS_sz-vs-WT view
-    # IS the canonical comparison the stats config targets.
+    # Dataset flags enable LC/DG statistics unless --no-stats is set.
+    # Cohort filtering does not disable the configured comparisons.
     force_no_stats = args.no_stats
 
     log.info("Running %d subfolder(s) under %s -> %s",
@@ -430,6 +390,7 @@ def main() -> None:
     # Captured heatmap vlim per source subfolder, so a downstream subfolder
     # (e.g. DG_GRABneMutant) can match the reference subfolder's color scale.
     captured_vlim: dict[str, float] = {}
+    failed = []
 
     for (subfolder, ds_key, threshold, has_temperature,
          ueo_y_lim, run_stats, output_subdir, pooled) in selected:
@@ -460,12 +421,16 @@ def main() -> None:
         except Exception as e:
             log.error("FATAL in %s: %s", subfolder, e)
             traceback.print_exc()
+            failed.append(subfolder)
             continue
         if "vlim_standard" in diagnostics:
             captured_vlim[subfolder] = diagnostics["vlim_standard"]
             log.info("  Captured heatmap vlim for %s: %.4f",
                      subfolder, diagnostics["vlim_standard"])
 
+    if failed:
+        log.error("Failed datasets: %s", ", ".join(failed))
+        raise SystemExit(1)
     log.info("DONE. Results in %s/results_*", output_root)
 
 

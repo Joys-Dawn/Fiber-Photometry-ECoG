@@ -1,8 +1,8 @@
 """
 Top-level statistics driver.
 
-`run_group_comparisons` takes the per-cohort module results that app.py
-already builds, extracts per-session scalars, runs an independent-group
+`run_group_comparisons` extracts per-session scalars from cohort results,
+runs an independent-group
 test per measurement, and writes one CSV per output folder
 (means / transients).
 
@@ -28,9 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _csv_name(name_prefix: str) -> str:
-    """File name for the stats CSV: ``stats_<prefix>.csv``.
-    Lets callers open multiple groups side-by-side in Excel without
-    filename collisions."""
+    """Return the statistics filename, optionally qualified by a prefix."""
     return f"stats_{name_prefix}.csv"
 
 
@@ -75,24 +73,16 @@ def _row_for_result(
 
 
 def _write_csv(rows: List[Dict[str, Any]], out_path: Path) -> Path:
-    # Drop rows where no test could be run (Test=="None") — those are
-    # measurements with too few finite observations per group to fit any
-    # test, and reporting them just adds noise to the CSV. The per-cohort
-    # descriptives for those rows are already empty/zero so nothing
-    # informative is lost.
+    # Omit rows for which no statistical test was performed.
     source_df = pd.DataFrame(rows)
     rows = [r for r in rows if r.get("Test") != "None"]
-    # Keep the source schema when every row is filtered. A schema-less empty
-    # DataFrame writes a newline-only file that CSV readers cannot parse;
-    # a header-only file accurately records that no valid tests remained.
+    # Preserve CSV headers when no test rows remain.
     df = pd.DataFrame(rows) if rows else source_df.iloc[0:0].copy()
     # Stable column ordering: base info, descriptives, p-values, post-hocs.
     base_cols = ["Module", "Measurement", "Test", "Statistic", "p_value"]
     base_cols = [c for c in base_cols if c in df.columns]
 
-    # Per-cohort descriptives, ordered mean -> sem -> n within each cohort,
-    # cohorts in alphabetical order. (Order matters in the rendered CSV;
-    # see comment in `_row_for_result`.)
+    # Alphabetical cohorts, with mean, SEM, and n for each.
     suffix_order = ("_mean", "_sem", "_n")
     by_prefix: Dict[str, Dict[str, str]] = {}
     for col in df.columns:
@@ -131,16 +121,12 @@ def run_group_comparisons(
 
     Parameters
     ----------
-    cohort_results : per-cohort module results, the same dict the app already
-        builds. Shape: ``{cohort_key: {module_name: group_result}}``.
+    cohort_results : ``{cohort_key: {module_name: group_result}}``.
     means_dir, transients_dir : output folders (`plots and values_means/`
-        and `plots and values_transients/`). Stats CSVs land here, alongside
-        the existing per-module plots.
+        and `plots and values_transients/`).
     config : optional `StatsConfig`. Defaults to the DS sz vs WT 2-way
         comparison. Raw p-values only - no multiple-comparison correction.
-    module_configs : optional per-module overrides. This supports datasets
-        whose baseline-transient comparison uses different biological groups
-        from the seizure-outcome comparison used by mean-signal modules.
+    module_configs : optional ``{module_name: StatsConfig}`` overrides.
 
     Returns
     -------
@@ -204,12 +190,6 @@ def run_group_comparisons(
             )
             rows_by_folder.setdefault(folder, []).append(row)
 
-    # Additional rows (e.g. within-cohort paired-period comparisons produced
-    # by `run_within_cohort_paired_periods`). They share the CSV so both the
-    # between-cohort and within-cohort views live in the same stats file.
-    # Rows are appended verbatim — extra descriptive columns (Heating_*,
-    # Ictal_*, Cohort) are padded with NaN in the between-cohort rows by
-    # `_write_csv`'s pandas DataFrame construction.
     if additional_rows_by_folder:
         for folder, extras in additional_rows_by_folder.items():
             if extras:
@@ -239,33 +219,7 @@ def run_within_cohort_paired_periods(
     period_b_label: str,
     cohorts: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Paired within-cohort comparison between two per-session period means.
-
-    For each cohort, aligns per-session ``period_a`` and ``period_b`` values
-    on ``(mouse_id, heating_session)`` and runs `compare_paired`, which
-    auto-picks a paired t-test vs Wilcoxon signed-rank based on the
-    normality of the differences.
-
-    Returns rows in the same schema as `_row_for_result` so they can be
-    appended to ``stats_<prefix>.csv`` via
-    `run_group_comparisons(..., additional_rows_by_folder=...)`. Each row
-    carries an additional ``Cohort`` column so the within-cohort rows are
-    distinguishable from the between-cohort ones.
-
-    Parameters
-    ----------
-    cohort_results : ``{cohort_key: {module_name: group_result}}`` — same
-        structure other stats functions consume.
-    module : the module name whose extractor exposes ``period_a`` /
-        ``period_b`` (e.g. ``"Pre-ictal mean"``).
-    period_a, period_b : measurement names as they appear in
-        `extract_all` output (e.g. ``"heating_mean"`` / ``"ictal_mean"``).
-    period_a_label, period_b_label : display labels used both in the
-        `Measurement` column and as the descriptive-column prefixes
-        (``Heating_mean`` / ``Ictal_mean`` etc.).
-    cohorts : optional iterable of cohort keys to test. None = every
-        cohort present in ``cohort_results``.
-    """
+    """Compare period_a and period_b within cohorts, paired by mouse and session."""
     long_rows = extract_all(cohort_results)
     if cohorts is None:
         cohorts = list(cohort_results.keys())
@@ -350,11 +304,12 @@ def run_paired_comparisons(
 ) -> Dict[str, Path]:
     """Run within-subject LMM comparisons between two cohorts.
 
-    Subjects are identified by ``mouse_id`` (the extractor key). One row
-    per session is fed to ``compare_paired_lmm``; if the LMM is singular
-    or fails to converge the function falls back to an independent-groups
-    test on session-level data (Welch's / Mann-Whitney U) with a loud
-    warning. Per-mouse averaging is never performed.
+    ``compare_paired_lmm`` fits mouse and session-pair random intercepts,
+    using one observation per session and condition. If R is unavailable
+    or the mixed-model fit is unusable, it warns and uses a paired t-test
+    or Wilcoxon signed-rank test on matched session pairs. The fallback
+    does not model within-mouse correlation across sessions. Observations
+    are not averaged per mouse.
 
     Parameters
     ----------

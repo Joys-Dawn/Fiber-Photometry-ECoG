@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import run_threshold_sweep as sweep
+from LC_paper import run_threshold_sweep as sweep
 from fiber_photometry_ecog.core.data_models import (
     PhotometryResult,
     RawData,

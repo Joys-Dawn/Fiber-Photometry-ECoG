@@ -9,13 +9,11 @@ shape-based thresholds or a Shapiro-Wilk normality test:
 3. Shapiro-Wilk p < SHAPIRO_ALPHA     -> non-parametric
 4. otherwise                           -> parametric
 
-Thresholds follow Curran, West & Finch (1996),
+Shape thresholds follow Curran, West & Finch (1996),
 "The robustness of test statistics to nonnormality and specification error
 in confirmatory factor analysis", Psychological Methods 1(1).
 
-Note: skew/kurtosis require >=3 values per group; smaller groups are
-treated as "no detectable shape violation" so they don't auto-fall to
-non-parametric tests on N alone.
+Groups with fewer than three non-NaN values are not assessed.
 """
 
 from typing import List
@@ -30,18 +28,10 @@ SHAPIRO_ALPHA = 0.05
 
 
 def should_use_parametric(data_arrays: List[np.ndarray]) -> bool:
-    """Return True if all groups satisfy parametric assumptions.
+    """Return True if no assessed group fails the configured checks.
 
-    Parameters
-    ----------
-    data_arrays : list of 1-D numpy arrays, one per group. NaNs are dropped
-        per-group before assessing assumptions.
-
-    Returns
-    -------
-    True if parametric tests are appropriate, False otherwise. Groups with
-    fewer than 3 finite values contribute no shape evidence and never veto
-    parametric on their own.
+    data_arrays contains one 1-D array per group. NaNs are removed; groups
+    with fewer than three remaining values are skipped. Errors return False.
     """
     for arr in data_arrays:
         arr = np.asarray(arr, dtype=float)

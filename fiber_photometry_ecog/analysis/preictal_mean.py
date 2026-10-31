@@ -1,9 +1,9 @@
 """
-4.3 Pre-Ictal Mean Signal.
+Pre-ictal mean signal summaries.
 
-Time-binned: mean z-ΔF/F within baseline, early heat, late heat.
-End of late heat: mean z-ΔF/F in window immediately before UEO.
-Temperature-binned: mean z-ΔF/F in configurable bins during heating,
+Time-binned: mean signal within baseline, early heat, late heat.
+End of late heat: mean signal in window immediately before UEO.
+Temperature-binned: mean signal in configurable bins during heating,
     relative to seizure onset temperature (or equivalent for controls).
 """
 
@@ -70,11 +70,8 @@ def compute_preictal_mean(
 
     sessions = [s for s in sessions if s.include_for_baseline]
 
-    # Ictal window availability check — all-or-none-or-crash. ictal_mean
-    # is computed when (ueo_t, off_t) form a valid window. If some sessions
-    # have it and some don't we refuse to silently drop them; either the
-    # paradigm has no ictal window (controls in some paradigms, returning
-    # NaN cohort mean is correct) or all sessions have one.
+    # Ictal windows must be valid for all or none of the cohort's sessions.
+    # Mixed availability raises an error; no windows yields a NaN mean.
     def _has_ictal_window(s):
         ueo = get_ueo_time(s)
         off = get_off_time(s)
@@ -151,10 +148,6 @@ def compute_preictal_mean(
         if ictal_mean is not None:
             ictal_means.append(ictal_mean)
 
-        # Temperature-binned: heating portion, relative to seizure onset temp.
-        # When the session has no temperature (PTZ paradigm), ueo_temp is
-        # None and `temperature` is all-NaN - skip the temp-binned panel and
-        # emit a NaN bin row so the per-session means above still land.
         if ueo_temp is None or np.all(np.isnan(temperature)):
             temp_bin_vals = np.full(len(bin_centers), np.nan)
         else:
@@ -186,7 +179,11 @@ def compute_preictal_mean(
     ictal_arr = np.array(ictal_means) if ictal_means else np.array([])
 
     temp_mat = np.array(all_temp_bins)  # (n_sessions, n_bins)
-    temp_group_mean = np.nanmean(temp_mat, axis=0)
+    temp_counts = np.sum(~np.isnan(temp_mat), axis=0)
+    temp_group_mean = np.divide(
+        np.nansum(temp_mat, axis=0), temp_counts,
+        out=np.full(len(bin_centers), np.nan), where=temp_counts > 0,
+    )
     temp_group_sem = np.full(len(bin_centers), np.nan)
     for b in range(len(bin_centers)):
         col = temp_mat[:, b]

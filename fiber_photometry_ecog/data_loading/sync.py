@@ -7,10 +7,7 @@ Follows Chandni's sync_signals.m approach:
 3. Linear regression (polyfit) on matched pulse times -> drift correction
 4. Warp photometry timeline using the linear mapping
 5. PCHIP-interpolate photometry signals onto the ECoG timebase
-6. Trim to overlapping region
-
-Improvement over single-edge alignment: uses ALL matched pulses to fit a
-linear model, which corrects for clock drift (not just a fixed offset).
+6. Trim to overlap, except optogenetic sessions retain the full photometry span
 """
 
 import logging
@@ -31,9 +28,9 @@ logger = logging.getLogger(__name__)
 class SyncResult:
     signal_470: np.ndarray     # photometry signal, upsampled & aligned
     signal_405: np.ndarray     # isosbestic signal, upsampled & aligned
-    ecog: np.ndarray           # ECoG signal, trimmed to overlap
-    emg: Optional[np.ndarray]  # EMG signal, trimmed to overlap (None if not recorded)
-    temperature_raw: np.ndarray # temperature signal, trimmed to overlap
+    ecog: np.ndarray           # aligned ECoG; NaN-padded where unavailable
+    emg: Optional[np.ndarray]  # aligned EMG (None if not recorded)
+    temperature_raw: np.ndarray # aligned temperature signal
     temp_bit_volts: float      # bit_volts factor for temperature conversion
     temp_slope: float          # T(C) = slope * V(mV) + intercept (per-session)
     temp_intercept: float      # per-session intercept (C)
@@ -44,7 +41,7 @@ class SyncResult:
     scaling: float             # linear mapping slope
     offset: float              # linear mapping offset (seconds)
     residual_ms: float         # mean residual after linear fit (ms)
-    stim: Optional[np.ndarray] = None  # opto-stim ADC channel, trimmed to overlap
+    stim: Optional[np.ndarray] = None  # aligned opto-stim ADC channel
 
 
 def _detect_rising_edges_ppd(ppd: PPDData) -> np.ndarray:
@@ -125,7 +122,7 @@ def synchronize(
     if len(eeg_edges) == 0:
         raise ValueError("No rising edges found in EEG TTL channel")
 
-    # --- Step 2: Correct starting time offset (per Chandni's approach) ---
+    # --- Step 2: Correct starting time offset ---
     t_first_eeg = eeg_edges[0]
     t_first_photo = photo_edges[0]
     start_diff = abs(t_first_photo - t_first_eeg)
@@ -176,13 +173,8 @@ def synchronize(
     # Use sample_numbers for absolute time (not 0-indexed) to match TTL timebase
     t_eeg = oep.sample_numbers.astype(np.float64) / oep.fs
 
-    # Opto sessions: keep the full PPD photometry span. OEP recordings for
-    # opto are often started just before stim and stopped soon after, which
-    # would otherwise throw away minutes of post-stim photometry. We detect
-    # opto via `oep.stim is not None` (a stim_channel was provided to the
-    # OEP reader). ECoG/EMG/stim/temperature stay clipped to OEP — those
-    # signals only exist where OEP was recording — and are NaN-padded in
-    # the extended window so downstream code sees a uniform time axis.
+    # Optogenetic sessions retain the full photometry span. Signals recorded
+    # by Open Ephys are NaN-padded outside their acquisition interval.
     is_opto = oep.stim is not None
     if is_opto:
         t_min = float(t_photo_aligned[0])
@@ -222,20 +214,13 @@ def synchronize(
         if emg_common is not None:
             emg_common = decimate(emg_common, factor)
         if stim_common is not None:
-            # Stim is a square pulse train (not lowpass-friendly). Subsample
-            # instead of decimate to preserve edges. Each pulse is many samples
-            # wide so subsampling stays sufficient for threshold-based onset
-            # detection.
+            # Subsample stimulation pulses to preserve their edges.
             stim_common = stim_common[::factor]
         temp_common = decimate(temp_common, factor)
         t_eeg_common = t_eeg_common[::factor]  # subsample timestamps to match
         output_fs = TARGET_FS
 
     if is_opto:
-        # Build a uniform timebase covering the full PPD aligned extent at
-        # output_fs, then place the OEP signals at the matching indices and
-        # NaN-pad the rest. Photometry is always defined within this range
-        # because we derived t_min/t_max from the PPD timeline.
         n_out = int(round((t_max - t_min) * output_fs)) + 1
         t_full = np.linspace(t_min, t_max, n_out)
 
